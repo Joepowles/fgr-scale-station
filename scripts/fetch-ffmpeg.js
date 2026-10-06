@@ -8,7 +8,7 @@ const path = require('path');
 const https = require('https');
 const { execSync } = require('child_process');
 
-const URL = process.env.FFMPEG_WIN_URL
+const FFMPEG_URL = process.env.FFMPEG_WIN_URL
   || 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip';
 const dest = path.join(__dirname, '..', 'resources', 'bin');
 const zipPath = path.join(dest, 'ffmpeg.zip');
@@ -34,8 +34,8 @@ const download = (url, file, redirects = 0) => new Promise((resolve, reject) => 
     console.log(`ffmpeg already present at ${target}`);
     return;
   }
-  console.log(`Downloading ${URL} ...`);
-  await download(URL, zipPath);
+  console.log(`Downloading ${FFMPEG_URL} ...`);
+  await download(FFMPEG_URL, zipPath);
   const extractDir = path.join(dest, 'extract');
   fs.rmSync(extractDir, { recursive: true, force: true });
   if (process.platform === 'win32') {
