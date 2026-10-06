@@ -1,0 +1,22 @@
+name: Tidy releases
+
+# Hand-run: merges duplicate releases for a tag into the one with the
+# installer. The release workflow does this itself for new tags.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to tidy (e.g. v0.1.1)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  tidy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/tidy-releases.js "${{ inputs.tag }}"

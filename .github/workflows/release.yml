@@ -26,10 +26,23 @@ jobs:
       - run: node scripts/fetch-ffmpeg.js
       - run: node scripts/build-python.js
       - run: npm run build
+      # electron-builder uploads the installer, the update feed and the
+      # blockmap in parallel, and when no release exists yet each upload can
+      # create its own. Making the release first means they all land on it.
+      - name: Create the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release view "${{ github.ref_name }}" > $null 2>&1 || gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes "Falcon Scale Station ${{ github.ref_name }}"
       - name: Package and publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder --win --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
+      - name: Remove duplicate releases for this tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/tidy-releases.js "${{ github.ref_name }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
