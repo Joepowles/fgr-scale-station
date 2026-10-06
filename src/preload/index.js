@@ -24,5 +24,5 @@ contextBridge.exposeInMainWorld('station', {
   },
   log: { recent: call('log:recent'), onLine: on('log') },
   window: { toggleFullscreen: call('window:toggle-fullscreen'), isFullscreen: call('window:is-fullscreen'), onFullscreen: on('window:fullscreen') },
-  updates: { onReady: on('update:ready') }
+  updates: { onReady: on('update:ready'), install: call('update:install') }
 });

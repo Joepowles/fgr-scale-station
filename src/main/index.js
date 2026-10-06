@@ -23,6 +23,7 @@ const { ffmpegAvailable } = require('./services/ffmpegPath');
 const { captureRtspSnapshot, rtspInjectCredentials } = require('./services/rtspSnapshot');
 
 let win = null;
+let updater = null;
 let server = null;
 let serverPort = 0;
 let scale = null;
@@ -161,6 +162,9 @@ const registerIpc = () => {
   ipcMain.handle('log:recent', () => logLines.slice(-200));
   ipcMain.handle('window:toggle-fullscreen', () => { win.setFullScreen(!win.isFullScreen()); return win.isFullScreen(); });
   ipcMain.handle('window:is-fullscreen', () => win.isFullScreen());
+  // The downloaded update is applied by quitting into the installer, which
+  // relaunches the app when done. Without this it happens on the next quit.
+  ipcMain.handle('update:install', () => { if (updater) { setImmediate(() => updater.quitAndInstall(true, true)); return true; } return false; });
 };
 
 // ── Window ────────────────────────────────────────────────────────────────
@@ -192,6 +196,7 @@ const startUpdater = () => {
   if (!app.isPackaged) return;
   try {
     const { autoUpdater } = require('electron-updater');
+    updater = autoUpdater;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.on('update-available', (info) => log(`update ${info.version} found, downloading`));

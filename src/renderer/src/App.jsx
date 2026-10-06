@@ -73,7 +73,11 @@ export default function App() {
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {updateReady && <span className="text-xs text-emerald-300" title="Restart the app to install it">Update {updateReady} ready</span>}
+            {updateReady && (
+              <button type="button" onClick={() => window.station.updates.install()} className="px-3 py-1 text-sm rounded bg-emerald-700 hover:bg-emerald-600 text-white" title="Closes the app, installs the update and opens it again">
+                Restart to update to {updateReady}
+              </button>
+            )}
             <button type="button" onClick={() => setShowHistory((v) => !v)} className="px-3 py-1 text-sm rounded bg-gray-800 hover:bg-gray-700" title="History (H)">History</button>
             <button type="button" onClick={() => setShowSettings(true)} className="px-3 py-1 text-sm rounded bg-gray-800 hover:bg-gray-700" title="Settings (S)">Settings</button>
             <button type="button" onClick={() => window.station.window.toggleFullscreen()} className="px-3 py-1 text-sm rounded bg-gray-800 hover:bg-gray-700" title="Full screen (F11)">⛶</button>
