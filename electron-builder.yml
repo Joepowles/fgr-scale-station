@@ -1,0 +1,42 @@
+appId: com.falcongreen.scalestation
+productName: Falcon Scale Station
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**
+  - package.json
+# Everything the app needs at runtime that is not JavaScript: the vehicle
+# model, the plate worker, ffmpeg and the embedded Python with fast-alpr and
+# its models. scripts/fetch-ffmpeg.js and scripts/build-python.js fill these in
+# before packaging; see .github/workflows/release.yml.
+extraResources:
+  - from: resources/models
+    to: models
+  - from: resources/python-worker
+    to: python-worker
+  - from: resources/bin
+    to: bin
+  - from: resources/python
+    to: python
+asarUnpack:
+  - "**/node_modules/sharp/**"
+  - "**/node_modules/@img/**"
+  - "**/node_modules/onnxruntime-node/**"
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.png
+  artifactName: ${productName}-Setup-${version}.${ext}
+nsis:
+  oneClick: true
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+publish:
+  provider: github
+  owner: Joepowles
+  repo: fgr-scale-station
+  releaseType: release

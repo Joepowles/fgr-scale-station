@@ -1,0 +1,38 @@
+name: Release (Windows installer)
+
+# Tag a version (v0.1.0) and this builds the Windows installer with ffmpeg and
+# the embedded Python inside, then publishes it to the GitHub release. The
+# installed app checks that release feed for updates when it has internet.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: node scripts/make-icon.js
+      - run: node scripts/fetch-ffmpeg.js
+      - run: node scripts/build-python.js
+      - run: npm run build
+      - name: Package and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer
+          path: dist/*.exe
+          if-no-files-found: ignore

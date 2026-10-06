@@ -1,0 +1,40 @@
+{
+  "name": "fgr-scale-station",
+  "productName": "Falcon Scale Station",
+  "version": "0.1.0",
+  "description": "Standalone Windows app for a truck scale: the scale camera full-screen with the live weight and the plate read off each truck, logged locally.",
+  "main": "./out/main/index.js",
+  "author": "Falcon Green Resources",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "test": "node --test tests/",
+    "lint": "eslint .",
+    "fetch:ffmpeg": "node scripts/fetch-ffmpeg.js",
+    "build:python": "node scripts/build-python.js",
+    "icon": "node scripts/make-icon.js",
+    "dist:win": "npm run build && electron-builder --win --publish never",
+    "release:win": "npm run build && electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "onnxruntime-node": "^1.30.0",
+    "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^5.1.0",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "eslint": "^9.39.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tailwindcss": "^4.3.3",
+    "vite": "^7.3.7"
+  }
+}

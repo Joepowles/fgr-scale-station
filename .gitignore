@@ -1,0 +1,10 @@
+node_modules/
+out/
+dist/
+# Filled in at build time by scripts/fetch-ffmpeg.js and scripts/build-python.js.
+resources/bin/
+resources/python/
+# Local scratch and OS noise.
+.DS_Store
+Thumbs.db
+*.log
