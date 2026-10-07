@@ -171,6 +171,18 @@ const registerIpc = () => {
   // The downloaded update is applied by quitting into the installer, which
   // relaunches the app when done. Without this it happens on the next quit.
   ipcMain.handle('update:install', () => { if (updater) { setImmediate(() => updater.quitAndInstall(true, true)); return true; } return false; });
+  // The Changelog tab's button. Progress and the outcome arrive on update:status.
+  ipcMain.handle('update:check', async () => {
+    if (!updater) return { state: app.isPackaged ? 'error' : 'dev', message: app.isPackaged ? 'Updater not available' : 'Updates only apply to the installed app' };
+    try {
+      const result = await updater.checkForUpdates();
+      const version = result?.updateInfo?.version;
+      const newer = !!version && version !== app.getVersion();
+      return { state: newer ? 'downloading' : 'none', version: version || app.getVersion() };
+    } catch (err) {
+      return { state: 'error', message: err.message };
+    }
+  });
 };
 
 // ── Window ────────────────────────────────────────────────────────────────
@@ -205,9 +217,12 @@ const startUpdater = () => {
     updater = autoUpdater;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.on('update-available', (info) => log(`update ${info.version} found, downloading`));
-    autoUpdater.on('update-downloaded', (info) => { log(`update ${info.version} ready; installs on next restart`); send('update:ready', info.version); });
-    autoUpdater.on('error', (err) => log(`updater: ${err.message}`));
+    autoUpdater.on('checking-for-update', () => send('update:status', { state: 'checking' }));
+    autoUpdater.on('update-not-available', (info) => send('update:status', { state: 'none', version: info?.version || app.getVersion() }));
+    autoUpdater.on('update-available', (info) => { log(`update ${info.version} found, downloading`); send('update:status', { state: 'downloading', version: info.version }); });
+    autoUpdater.on('download-progress', (p) => send('update:status', { state: 'downloading', percent: Math.round(p.percent || 0) }));
+    autoUpdater.on('update-downloaded', (info) => { log(`update ${info.version} ready; installs on next restart`); send('update:ready', info.version); send('update:status', { state: 'ready', version: info.version }); });
+    autoUpdater.on('error', (err) => { log(`updater: ${err.message}`); send('update:status', { state: 'error', message: err.message }); });
     const check = () => autoUpdater.checkForUpdates().catch(() => {});
     setTimeout(check, 30000);
     setInterval(check, 6 * 60 * 60 * 1000);

@@ -5,7 +5,26 @@ import React, { useEffect, useState } from 'react';
 // is in that file, so nothing fancier is needed here.
 export default function ChangelogTab({ info }) {
   const [text, setText] = useState('');
-  useEffect(() => { window.station.changelog().then(setText); }, []);
+  const [status, setStatus] = useState(null);
+  const [checking, setChecking] = useState(false);
+  useEffect(() => {
+    window.station.changelog().then(setText);
+    return window.station.updates.onStatus(setStatus);
+  }, []);
+
+  const check = async () => {
+    setChecking(true);
+    setStatus({ state: 'checking' });
+    try { setStatus(await window.station.updates.check()); } finally { setChecking(false); }
+  };
+  const statusText = !status ? '' : {
+    checking: 'Checking…',
+    none: `You are up to date (${status.version || info.version}).`,
+    downloading: `Downloading ${status.version || 'the update'}${status.percent ? ` · ${status.percent}%` : ''}…`,
+    ready: `Version ${status.version} is downloaded. Use "Restart to update" in the header to install it.`,
+    error: `Could not check: ${status.message}`,
+    dev: status.message
+  }[status.state] || '';
 
   const sections = [];
   for (const line of text.split(/\r?\n/)) {
@@ -17,9 +36,15 @@ export default function ChangelogTab({ info }) {
 
   return (
     <div className="space-y-5">
-      <div className="rounded-md border border-emerald-900 bg-emerald-950/40 p-3">
-        <h3 className="text-sm font-semibold text-emerald-200">Changelog</h3>
-        <p className="text-xs text-emerald-300/80 mt-0.5">You are on version {info.version}. Updates download on their own when the PC has internet and install from the button in the header.</p>
+      <div className="rounded-md border border-emerald-900 bg-emerald-950/40 p-3 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h3 className="text-sm font-semibold text-emerald-200">Changelog</h3>
+          <p className="text-xs text-emerald-300/80 mt-0.5">You are on version {info.version}. Updates download on their own when the PC has internet and install from the button in the header.</p>
+          {statusText && <p className={`text-xs mt-1 ${status?.state === 'error' ? 'text-amber-300' : 'text-emerald-200'}`}>{statusText}</p>}
+        </div>
+        <button type="button" onClick={check} disabled={checking} className="px-3 py-1.5 text-sm rounded-md bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-50 whitespace-nowrap">
+          {checking ? 'Checking…' : 'Check for updates'}
+        </button>
       </div>
       {!sections.length && <p className="text-sm text-gray-500">No changelog in this build.</p>}
       {sections.map((s) => (

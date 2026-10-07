@@ -2,6 +2,10 @@
 
 Newest first. The app shows this file on the Changelog tab of its settings.
 
+## 0.1.5
+
+- A "Check for updates" button at the top of the Changelog tab, with the result shown beside it.
+
 ## 0.1.4
 
 - A Changelog tab in Settings, showing this list.
