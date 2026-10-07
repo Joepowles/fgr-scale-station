@@ -6,6 +6,7 @@ Newest first. The app shows this file on the Changelog tab of its settings.
 
 - "Find cameras" now searches every network this PC is on, not just the one the multicast reply came back on. Each network gets the ONVIF multicast probe and then an address-by-address sweep (the probe sent to each address, plus a knock on the usual ONVIF ports), so a camera is found even when multicast is blocked or the camera has discovery turned off. The list says which networks were searched, and the button shows progress.
 - A camera picked from the list is asked for its streams at the port it answered on, and the ONVIF port setting is now used when listing streams for a typed-in address.
+- An update download that fails on a poor connection is tried again after 2 minutes, then 5, 15, 30 and 60, instead of waiting for the next six-hourly check. The Changelog tab says when the next try is. Downloads are differential: only the parts of the installer that changed since the installed version are fetched (about 17 MB of 332 MB between 0.1.4 and 0.1.5).
 
 ## 0.1.5
 

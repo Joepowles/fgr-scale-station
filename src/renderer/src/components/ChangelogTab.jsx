@@ -22,7 +22,7 @@ export default function ChangelogTab({ info }) {
     none: `You are up to date (${status.version || info.version}).`,
     downloading: `Downloading ${status.version || 'the update'}${status.percent ? ` · ${status.percent}%` : ''}…`,
     ready: `Version ${status.version} is downloaded. Use "Restart to update" in the header to install it.`,
-    error: `Could not check: ${status.message}`,
+    error: `Could not ${status.retryMinutes ? 'update' : 'check'}: ${status.message}${status.retryMinutes ? ` · trying again in ${status.retryMinutes} min` : ''}`,
     dev: status.message
   }[status.state] || '';
 

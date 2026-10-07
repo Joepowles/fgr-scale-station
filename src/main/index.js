@@ -222,8 +222,26 @@ const startUpdater = () => {
     autoUpdater.on('update-available', (info) => { log(`update ${info.version} found, downloading`); send('update:status', { state: 'downloading', version: info.version }); });
     autoUpdater.on('download-progress', (p) => send('update:status', { state: 'downloading', percent: Math.round(p.percent || 0) }));
     autoUpdater.on('update-downloaded', (info) => { log(`update ${info.version} ready; installs on next restart`); send('update:ready', info.version); send('update:status', { state: 'ready', version: info.version }); });
-    autoUpdater.on('error', (err) => { log(`updater: ${err.message}`); send('update:status', { state: 'error', message: err.message }); });
     const check = () => autoUpdater.checkForUpdates().catch(() => {});
+    // A yard PC is often on a poor link, and a download that drops is thrown
+    // away rather than resumed. Rather than wait for the six-hourly check,
+    // try again soon, backing off up to an hour. The download is differential
+    // (only the blocks that changed since the installed version), so each
+    // attempt is a small fraction of the installer.
+    const RETRY_MINUTES = [2, 5, 15, 30, 60];
+    let failures = 0;
+    let retryTimer = null;
+    const clearRetry = () => { failures = 0; if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; } };
+    autoUpdater.on('update-not-available', clearRetry);
+    autoUpdater.on('update-downloaded', clearRetry);
+    autoUpdater.on('error', (err) => {
+      const minutes = RETRY_MINUTES[Math.min(failures, RETRY_MINUTES.length - 1)];
+      failures += 1;
+      log(`updater: ${err.message}; trying again in ${minutes} min`);
+      send('update:status', { state: 'error', message: err.message, retryMinutes: minutes });
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => { retryTimer = null; check(); }, minutes * 60 * 1000);
+    });
     setTimeout(check, 30000);
     setInterval(check, 6 * 60 * 60 * 1000);
   } catch (err) {
