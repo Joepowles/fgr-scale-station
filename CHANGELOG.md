@@ -2,6 +2,11 @@
 
 Newest first. The app shows this file on the Changelog tab of its settings.
 
+## 0.1.6
+
+- "Find cameras" now searches every network this PC is on, not just the one the multicast reply came back on. Each network gets the ONVIF multicast probe and then an address-by-address sweep (the probe sent to each address, plus a knock on the usual ONVIF ports), so a camera is found even when multicast is blocked or the camera has discovery turned off. The list says which networks were searched, and the button shows progress.
+- A camera picked from the list is asked for its streams at the port it answered on, and the ONVIF port setting is now used when listing streams for a typed-in address.
+
 ## 0.1.5
 
 - A "Check for updates" button at the top of the Changelog tab, with the result shown beside it.

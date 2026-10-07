@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { inputClass, btn } from '../lib';
 
 // Find the camera on the LAN, pick its streams, check a frame comes through.
@@ -11,15 +11,28 @@ export default function CameraTab({ draft, patch, info }) {
   const [test, setTest] = useState(null);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState('');
+  const [progress, setProgress] = useState(null);
+
+  useEffect(() => window.station.camera.onDiscoverProgress(setProgress), []);
 
   const discover = async () => {
-    setFinding(true); setError(''); setFound(null);
-    try { setFound(await window.station.camera.discover()); } catch (err) { setError(err.message); } finally { setFinding(false); }
+    setFinding(true); setError(''); setFound(null); setProgress(null);
+    try {
+      setFound(await window.station.camera.discover({ username: c.username, password: c.password, onvifPort: c.onvifPort }));
+    } catch (err) { setError(err.message); } finally { setFinding(false); setProgress(null); }
   };
-  const listStreams = async (host = c.host) => {
+  // A camera picked from the list is asked at the address it answered on;
+  // one typed in is asked on the ONVIF port set beside it.
+  const useCamera = (cam) => {
+    let port = c.onvifPort;
+    try { port = Number(new URL(cam.deviceUrl).port) || 80; } catch { /* keep the setting */ }
+    patch('camera', { host: cam.host, onvifPort: port });
+    listStreams({ deviceUrl: cam.deviceUrl, host: cam.host });
+  };
+  const listStreams = async ({ host = c.host, deviceUrl } = {}) => {
     setListing(true); setError(''); setStreams(null);
     try {
-      const list = await window.station.camera.streams({ host, username: c.username, password: c.password });
+      const list = await window.station.camera.streams({ host, deviceUrl, port: c.onvifPort, username: c.username, password: c.password });
       setStreams(list);
       if (!list.length) setError('The camera listed no streams. Check the login.');
     } catch (err) { setError(err.message); } finally { setListing(false); }
@@ -47,22 +60,24 @@ export default function CameraTab({ draft, patch, info }) {
             <label className="block text-xs text-gray-400 col-span-3">Camera address
               <div className="flex gap-2 mt-1">
                 <input className={inputClass} value={c.host} placeholder="192.168.1.229" onChange={(e) => patch('camera', { host: e.target.value })} />
-                <button type="button" onClick={discover} disabled={finding} className={`${btn} whitespace-nowrap`}>{finding ? 'Searching…' : 'Find cameras'}</button>
+                <button type="button" onClick={discover} disabled={finding} className={`${btn} whitespace-nowrap`}>{finding ? (progress ? `${progress.network}.x ${Math.round((progress.done / progress.total) * 100)}%` : 'Searching…') : 'Find cameras'}</button>
               </div>
             </label>
             <label className="block text-xs text-gray-400">Username<input className={inputClass} value={c.username} onChange={(e) => patch('camera', { username: e.target.value })} /></label>
             <label className="block text-xs text-gray-400">Password<input type="password" className={inputClass} value={c.password} onChange={(e) => patch('camera', { password: e.target.value })} /></label>
             <label className="block text-xs text-gray-400">ONVIF port<input type="number" className={inputClass} value={c.onvifPort} onChange={(e) => patch('camera', { onvifPort: Number(e.target.value) })} /></label>
           </div>
+          {finding && <p className="text-[11px] text-gray-500">Asking every network this PC is on, by multicast and then address by address. A minute or so.</p>}
           {found && (
             <div className="border border-gray-700 rounded-md divide-y divide-gray-800 text-sm">
-              {!found.length && <p className="p-2 text-gray-500 text-xs">No cameras answered. They must be on this PC's network and have ONVIF turned on.</p>}
-              {found.map((cam) => (
-                <button key={cam.host} type="button" onClick={() => { patch('camera', { host: cam.host }); listStreams(cam.host); }} className="w-full text-left px-3 py-2 hover:bg-gray-800 flex justify-between">
+              {!found.cameras.length && <p className="p-2 text-gray-500 text-xs">No cameras answered. Each must be on one of this PC's networks, powered, and have ONVIF turned on; a camera on a different range than the PC is not found this way, so type its address instead.</p>}
+              {found.cameras.map((cam) => (
+                <button key={cam.host} type="button" onClick={() => useCamera(cam)} className="w-full text-left px-3 py-2 hover:bg-gray-800 flex justify-between gap-2">
                   <span className="mono">{cam.host}</span>
-                  <span className="text-gray-400 text-xs">{[cam.name, cam.hardware].filter(Boolean).join(' · ')}</span>
+                  <span className="text-gray-400 text-xs text-right">{[cam.name, cam.hardware].filter(Boolean).join(' · ') || (cam.confirmed === false ? 'ONVIF, needs a login' : 'ONVIF')}</span>
                 </button>
               ))}
+              <p className="px-2 py-1 text-[11px] text-gray-500">Searched {found.networks.length ? found.networks.join(', ') : 'no networks (this PC has no LAN address)'}.</p>
             </div>
           )}
           <button type="button" onClick={() => listStreams()} disabled={listing || !c.host} className={btn}>{listing ? 'Asking the camera…' : 'List this camera\'s streams'}</button>

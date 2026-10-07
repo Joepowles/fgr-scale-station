@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld('station', {
     status: call('scale:status'), test: call('scale:test'), discover: call('scale:discover'),
     onStatus: on('scale:status'), onWeighed: on('scale:weighed'), onPlate: on('scale:plate'), onDiscoverProgress: on('scale:discover-progress')
   },
-  camera: { discover: call('camera:discover'), streams: call('camera:streams'), snapshotTest: call('camera:snapshot-test') },
+  camera: { discover: call('camera:discover'), streams: call('camera:streams'), snapshotTest: call('camera:snapshot-test'), onDiscoverProgress: on('camera:discover-progress') },
   plates: { readNow: call('plates:read-now'), status: call('plates:status') },
   history: {
     list: call('history:list'), stats: call('history:stats'), prune: call('history:prune'),

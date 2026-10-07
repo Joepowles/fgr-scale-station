@@ -138,7 +138,7 @@ const registerIpc = () => {
   ipcMain.handle('scale:status', () => scale?.status || null);
   ipcMain.handle('scale:test', (_e, args) => testConnection(args));
   ipcMain.handle('scale:discover', async () => nportDiscovery.discover({ onProgress: (done, total) => send('scale:discover-progress', { done, total }) }));
-  ipcMain.handle('camera:discover', () => cameraDiscovery.probe(3500));
+  ipcMain.handle('camera:discover', (_e, args) => cameraDiscovery.discover({ ...(args || {}), onProgress: (done, total, network) => send('camera:discover-progress', { done, total, network }) }));
   ipcMain.handle('camera:streams', (_e, args) => cameraDiscovery.streamsOf(args));
   ipcMain.handle('camera:snapshot-test', async (_e, { url, username, password }) => {
     const jpeg = await captureRtspSnapshot(url, username, password, 12000);
