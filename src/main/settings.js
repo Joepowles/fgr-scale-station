@@ -20,7 +20,7 @@ const DEFAULTS = {
   plates: {
     enabled: true,
     minConfidence: 0.6,
-    overlayCorner: 'bottom-left',
+    overlayCorner: 'top-left',
     retryAttempts: 10,
     retrySeconds: 3,
     stampPhoto: true
@@ -35,7 +35,7 @@ const DEFAULTS = {
     stableSeconds: 2,
     stableTolerance: 40,
     display: 'picture',       // picture | header | section | none
-    overlayCorner: 'bottom-right',
+    overlayCorner: 'bottom-left',
     stampPhoto: true,
     capturePhoto: true,
     readPlate: true,
@@ -52,7 +52,24 @@ const DEFAULTS = {
     fullscreen: false,
     alwaysOnTop: false,
     startWithWindows: false
+  },
+  // Bumped when a default changes in a way existing settings files should
+  // pick up; see migrate().
+  meta: { version: 2 }
+};
+
+// Settings saved by an older version carry the old defaults as if chosen.
+// Where they still match those, they move to the new ones; a corner the user
+// picked on purpose is left alone.
+const migrate = (loaded) => {
+  const out = loaded;
+  const version = Number(out.meta?.version) || 1;
+  if (version < 2) {
+    if (out.plates.overlayCorner === 'bottom-left') out.plates.overlayCorner = 'top-left';
+    if (out.scale.overlayCorner === 'bottom-right') out.scale.overlayCorner = 'bottom-left';
   }
+  out.meta = { ...(out.meta || {}), version: DEFAULTS.meta.version };
+  return out;
 };
 
 const file = () => path.join(paths.ensureDir(paths.userDataDir()), 'settings.json');
@@ -70,9 +87,17 @@ let cache = null;
 
 const load = () => {
   if (cache) return cache;
-  try {
-    cache = merge(DEFAULTS, JSON.parse(fs.readFileSync(file(), 'utf8')));
-  } catch {
+  let raw = null;
+  try { raw = JSON.parse(fs.readFileSync(file(), 'utf8')); } catch { raw = null; }
+  if (raw) {
+    // A file from before meta existed is version 1, whatever merge() would
+    // fill in; migrate sees the real saved values.
+    const savedVersion = Number(raw.meta?.version) || 1;
+    cache = migrate({ ...merge(DEFAULTS, raw), meta: { version: savedVersion } });
+    if (savedVersion < DEFAULTS.meta.version) {
+      try { fs.writeFileSync(file(), JSON.stringify(cache, null, 2)); } catch {}
+    }
+  } else {
     cache = merge(DEFAULTS, {});
   }
   return cache;

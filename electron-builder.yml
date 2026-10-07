@@ -11,6 +11,8 @@ files:
 # its models. scripts/fetch-ffmpeg.js and scripts/build-python.js fill these in
 # before packaging; see .github/workflows/release.yml.
 extraResources:
+  - from: CHANGELOG.md
+    to: CHANGELOG.md
   - from: resources/models
     to: models
   - from: resources/python-worker

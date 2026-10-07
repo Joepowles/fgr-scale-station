@@ -3,13 +3,15 @@ import CameraTab from './CameraTab';
 import PlatesTab from './PlatesTab';
 import ScaleTab from './ScaleTab';
 import HistoryTab from './HistoryTab';
+import ChangelogTab from './ChangelogTab';
 import { btnPrimary, btn } from '../lib';
 
 const TABS = [
   { key: 'camera', label: 'Camera' },
   { key: 'plates', label: 'Plates' },
   { key: 'scale', label: 'Scale' },
-  { key: 'history', label: 'History' }
+  { key: 'history', label: 'History' },
+  { key: 'changelog', label: 'Changelog' }
 ];
 
 // One window, four tabs, one Save: the same shape as the card settings on the
@@ -59,6 +61,7 @@ export default function SettingsModal({ settings, info, onSaved, onClose }) {
           {tab === 'plates' && <PlatesTab draft={draft} patch={patch} info={info} />}
           {tab === 'scale' && <ScaleTab draft={draft} patch={patch} info={info} />}
           {tab === 'history' && <HistoryTab draft={draft} patch={patch} info={info} />}
+          {tab === 'changelog' && <ChangelogTab info={info} />}
         </div>
         <div className="flex items-center justify-between gap-3 px-5 py-3 border-t border-gray-800">
           <span className="text-xs text-red-400">{error}</span>

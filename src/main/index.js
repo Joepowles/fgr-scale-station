@@ -160,6 +160,12 @@ const registerIpc = () => {
     return r.canceled ? null : r.filePaths[0];
   });
   ipcMain.handle('log:recent', () => logLines.slice(-200));
+  ipcMain.handle('app:changelog', () => {
+    for (const candidate of [path.join(paths.resourcesDir(), 'CHANGELOG.md'), path.join(paths.projectRoot, 'CHANGELOG.md')]) {
+      try { return fs.readFileSync(candidate, 'utf8'); } catch {}
+    }
+    return '';
+  });
   ipcMain.handle('window:toggle-fullscreen', () => { win.setFullScreen(!win.isFullScreen()); return win.isFullScreen(); });
   ipcMain.handle('window:is-fullscreen', () => win.isFullScreen());
   // The downloaded update is applied by quitting into the installer, which
