@@ -57,7 +57,7 @@ const DEFAULTS = {
   // repository), which holds the GitHub token; nothing to set up at a yard.
   // A token typed on the tab files the issue directly instead.
   support: {
-    relayUrl: '',
+    relayUrl: 'https://scale-station-reports.joepowles.workers.dev',
     repo: 'Joepowles/fgr-scale-station',
     githubToken: ''
   },
