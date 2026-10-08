@@ -90,7 +90,10 @@ class FrameSplitter {
 // weight has to sit inside a tolerance band for stableSeconds, with no motion
 // flag anywhere in that window, and be at or above minWeight. That fires once.
 // It does not fire again until the deck has gone back under clearWeight: a
-// truck shuffling forward a few feet is the same truck.
+// truck shuffling forward a few feet is the same truck. The deck has to read
+// clear for the whole window too: one low reading - a corrupted frame, a
+// glitch on the line - is not a truck leaving, and must not set up a second
+// weighing of the truck still sitting there.
 //
 // But a truck creeping on slowly can settle with only its front axle on the
 // deck, and a tractor can settle before its trailer is on. So while the deck
@@ -118,20 +121,17 @@ class WeighingTrigger {
     while (this.window.length && this.window[0].at < since) this.window.shift();
 
     const spansWindow = this.window.length >= 2 && (at - this.window[0].at) >= this.stableMs * 0.9;
-    let settled = false;
-    if (spansWindow) {
-      let min = Infinity; let max = -Infinity; let moving = false;
-      for (const r of this.window) {
-        if (r.weight < min) min = r.weight;
-        if (r.weight > max) max = r.weight;
-        if (r.motion) moving = true;
-      }
-      settled = !moving && (max - min) <= this.tolerance;
+    let min = Infinity; let max = -Infinity; let moving = false;
+    for (const r of this.window) {
+      if (r.weight < min) min = r.weight;
+      if (r.weight > max) max = r.weight;
+      if (r.motion) moving = true;
     }
+    const settled = spansWindow && !moving && (max - min) <= this.tolerance;
     this.settled = settled;
 
     if (!this.armed) {
-      if (reading.weight <= this.clearWeight) {
+      if (spansWindow && max <= this.clearWeight) {
         this.armed = true;
         return { type: 'cleared', weight: reading.weight, at };
       }

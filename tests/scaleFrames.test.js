@@ -66,7 +66,9 @@ test('fires once per truck, after the weight settles, and re-arms when the deck 
   for (let i = 0; i < 10; i++) feed(30000, true);      // rolling off
   for (let i = 0; i < 60; i++) feed(6000);             // a second truck already on? no: deck never cleared
   assert.deepEqual(events, ['weighed']);
-  for (let i = 0; i < 5; i++) feed(140);
+  for (let i = 0; i < 5; i++) feed(140);               // a quarter second clear: not yet
+  assert.deepEqual(events, ['weighed']);
+  for (let i = 0; i < 40; i++) feed(140);
   assert.deepEqual(events, ['weighed', 'cleared']);
   for (let i = 0; i < 50; i++) feed(31000);
   assert.deepEqual(events, ['weighed', 'cleared', 'weighed']);
@@ -114,7 +116,7 @@ test('a truck that settles heavier after the first settle is reweighed, more tha
   for (let i = 0; i < 20; i++) feed(60000, true);             // part of it rolls off: a lighter settle is not a correction
   for (let i = 0; i < 50; i++) feed(50000);
   assert.equal(events.length, 3);
-  for (let i = 0; i < 5; i++) feed(140);
+  for (let i = 0; i < 45; i++) feed(140);
   assert.deepEqual(events.map((e) => e.type), ['weighed', 'reweighed', 'reweighed', 'cleared']);
   assert.equal(t.lastWeighing.weight, events[2].weight);
 });
@@ -129,4 +131,22 @@ test('a wobble that stays inside the tolerance is not a reweigh', () => {
     if (e) events.push(e.type);
   }
   assert.deepEqual(events, ['weighed']);
+});
+
+test('one stray low reading does not clear the deck or weigh the same truck again', () => {
+  const t = new WeighingTrigger({ minWeight: 4000, clearWeight: 1000, stableSeconds: 2, stableTolerance: 40 });
+  const events = [];
+  let now = 0;
+  const feed = (weight, motion = false) => { const e = t.push({ weight, unit: 'lb', gross: true, motion, valid: true }, now); now += 50; if (e) events.push(e.type); };
+  for (let i = 0; i < 40; i++) feed(140);
+  for (let i = 0; i < 60; i++) feed(32000);
+  assert.deepEqual(events, ['weighed']);
+  for (let round = 0; round < 10; round++) {       // a corrupted frame every three seconds, for half a minute
+    feed(3);
+    for (let i = 0; i < 60; i++) feed(32000);
+  }
+  assert.deepEqual(events, ['weighed']);
+  assert.equal(t.armed, false);
+  for (let i = 0; i < 45; i++) feed(0);            // the truck really leaves
+  assert.deepEqual(events, ['weighed', 'cleared']);
 });

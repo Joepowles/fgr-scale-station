@@ -2,6 +2,11 @@
 
 Newest first. The app shows this file on the Changelog tab of its settings.
 
+## 0.1.8
+
+- The same truck is no longer weighed again and again while it sits on the deck. The deck now has to read clear for the whole settle window before the next weighing can fire, so a single stray low reading from the indicator (a corrupted frame, a glitch on the line) is not taken as the truck leaving. Saving settings while a truck is on the deck no longer weighs it again either.
+- The app's log is written to station.log beside the settings file, kept to about 2 MB, so what the scale and camera did can be read back later.
+
 ## 0.1.7
 
 - A truck that settles with only part of itself on the deck no longer leaves that partial weight in the history. If the scale settles again heavier than the weight already taken, by more than the wobble tolerance, the same history entry is corrected: it takes the new weight and a fresh picture of the whole truck, keeps its plate, and notes the weight first read. This repeats as more of the truck comes on, a trailer for instance, and a lighter settle (the truck rolling off) is never taken as a correction.

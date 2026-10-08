@@ -31,11 +31,27 @@ let history = null;
 let pipeline = null;
 const logLines = [];
 
+// The log also goes to station.log beside the settings file, so what the
+// scale and camera did on a day can be read back on the yard PC afterwards.
+// Kept to about 2 MB: the older half is dropped when it grows past that.
+const LOG_FILE_MAX = 2 * 1024 * 1024;
+const logFile = () => path.join(paths.userDataDir(), 'station.log');
+const appendLogFile = (line) => {
+  try {
+    const file = logFile();
+    fs.appendFileSync(file, `${line}\n`);
+    if (fs.statSync(file).size > LOG_FILE_MAX) {
+      const text = fs.readFileSync(file, 'utf8');
+      fs.writeFileSync(file, text.slice(text.indexOf('\n', text.length / 2) + 1));
+    }
+  } catch {}
+};
 const log = (message) => {
   const line = `${new Date().toISOString()} ${message}`;
   logLines.push(line);
   if (logLines.length > 500) logLines.shift();
   console.log(line);
+  appendLogFile(line);
   send('log', line);
 };
 
@@ -89,10 +105,11 @@ const startServer = () => new Promise((resolve) => {
 
 // ── Scale ─────────────────────────────────────────────────────────────────
 const startScale = () => {
+  const previous = scale;
   if (scale) { scale.stop(); scale = null; }
   const s = settings().scale;
   if (!s.enabled || !s.host) { send('scale:status', null); return; }
-  scale = new ScaleReader(s).start();
+  scale = new ScaleReader(s).adopt(previous).start();
   scale.on('status', (status) => send('scale:status', status));
   scale.on('weighed', async (weighing) => {
     log(`weighed ${weighing.weight} ${weighing.unit}`);

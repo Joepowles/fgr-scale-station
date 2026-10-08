@@ -30,6 +30,17 @@ class ScaleReader extends EventEmitter {
     };
   }
 
+  // Settings were saved while a truck sat on the deck: the reader is made
+  // afresh, but the truck is the same one, already weighed. Carry that over
+  // so it is not weighed again two seconds later.
+  adopt(previous) {
+    if (!previous) return this;
+    this.trigger.armed = previous.trigger.armed;
+    this.trigger.lastWeighing = previous.trigger.lastWeighing;
+    Object.assign(this.status, { lastWeighing: previous.status.lastWeighing, loaded: !this.trigger.armed });
+    return this;
+  }
+
   start() { this.connect(); return this; }
 
   stop() {
