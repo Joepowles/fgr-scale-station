@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('station', {
     openFolder: call('history:open-folder'), chooseFolder: call('history:choose-folder'), onEntry: on('history:entry')
   },
   log: { recent: call('log:recent'), onLine: on('log') },
+  support: { send: call('support:send'), save: call('support:save'), open: call('support:open') },
   window: { toggleFullscreen: call('window:toggle-fullscreen'), isFullscreen: call('window:is-fullscreen'), onFullscreen: on('window:fullscreen') },
   updates: { onReady: on('update:ready'), install: call('update:install'), check: call('update:check'), onStatus: on('update:status') }
 });

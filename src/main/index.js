@@ -14,6 +14,7 @@ const paths = require('./paths');
 const { ScaleReader, testConnection } = require('./services/scaleReader');
 const { History } = require('./services/history');
 const { WeighingPipeline } = require('./services/weighingPipeline');
+const bugReport = require('./services/bugReport');
 const cameraStream = require('./services/cameraStream');
 const cameraDiscovery = require('./services/cameraDiscovery');
 const nportDiscovery = require('./services/nportDiscovery');
@@ -183,6 +184,35 @@ const registerIpc = () => {
     return r.canceled ? null : r.filePaths[0];
   });
   ipcMain.handle('log:recent', () => logLines.slice(-200));
+  // The Bug report tab. The report is what was typed plus the app's own
+  // account of itself: version, settings without passwords, the last
+  // weighings, the tail of the log. Filed on GitHub, or saved to a file to
+  // send some other way when the PC has no internet.
+  const buildBugReport = (description) => {
+    let logText = '';
+    try { logText = fs.readFileSync(logFile(), 'utf8'); } catch { logText = logLines.join('\n'); }
+    return bugReport.buildReport({
+      description,
+      info: { version: app.getVersion(), electron: process.versions.electron, ffmpeg: ffmpegAvailable(), plateReader: plateReader.status(), vehicleModel: detector.modelIsPresent() },
+      settings: settings(), log: logText, history: history ? history.list({ limit: 40 }) : [], scale: scale?.status || null
+    });
+  };
+  ipcMain.handle('support:send', async (_e, { description, repo, token } = {}) => {
+    const report = buildBugReport(description);
+    const sup = settings().support || {};
+    const issue = await bugReport.fileIssue({ repo: repo || sup.repo, token: token || sup.githubToken, title: report.title, body: report.body });
+    log(`bug report filed: ${issue.url}`);
+    return issue;
+  });
+  ipcMain.handle('support:save', async (_e, { description } = {}) => {
+    const report = buildBugReport(description);
+    const stampText = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const r = await dialog.showSaveDialog(win, { title: 'Save the bug report', defaultPath: path.join(app.getPath('desktop'), `scale-station-report-${stampText}.md`), filters: [{ name: 'Markdown', extensions: ['md'] }] });
+    if (r.canceled || !r.filePath) return null;
+    fs.writeFileSync(r.filePath, `# ${report.title}\n\n${report.body}`);
+    return r.filePath;
+  });
+  ipcMain.handle('support:open', (_e, url) => { if (/^https:\/\/github\.com\//.test(String(url))) shell.openExternal(url); });
   ipcMain.handle('app:changelog', () => {
     for (const candidate of [path.join(paths.resourcesDir(), 'CHANGELOG.md'), path.join(paths.projectRoot, 'CHANGELOG.md')]) {
       try { return fs.readFileSync(candidate, 'utf8'); } catch {}

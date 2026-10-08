@@ -53,6 +53,11 @@ const DEFAULTS = {
     alwaysOnTop: false,
     startWithWindows: false
   },
+  // The Bug report tab files an issue on GitHub with a token kept here.
+  support: {
+    repo: 'Joepowles/fgr-scale-station',
+    githubToken: ''
+  },
   // Bumped when a default changes in a way existing settings files should
   // pick up; see migrate().
   meta: { version: 2 }

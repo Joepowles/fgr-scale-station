@@ -2,6 +2,10 @@
 
 Newest first. The app shows this file on the Changelog tab of its settings.
 
+## 0.1.9
+
+- A Bug report tab in Settings. Type what happened and press "Send to GitHub": the report goes up as an issue with the app's version, its settings (passwords removed), the last 40 weighings and the recent log, so the problem can be looked at without anyone coming to the PC. It needs a GitHub token entered once on that tab. With no internet, "Save report to a file" writes the same report to send along later.
+
 ## 0.1.8
 
 - The same truck is no longer weighed again and again while it sits on the deck. The deck now has to read clear for the whole settle window before the next weighing can fire, so a single stray low reading from the indicator (a corrupted frame, a glitch on the line) is not taken as the truck leaving. Saving settings while a truck is on the deck no longer weighs it again either.
