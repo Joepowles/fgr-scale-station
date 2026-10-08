@@ -111,6 +111,8 @@ const fileIssue = async ({ repo, token, title, body, labels = ['from-the-yard'],
     clearTimeout(timer);
   }
   const text = await res.text();
+  // A label the repository does not have must not sink the report.
+  if (res.status === 422 && labels.length) return fileIssue({ repo, token, title, body, labels: [], timeoutMs, fetchFn });
   if (!res.ok) throw new Error(explainStatus(res.status, text));
   let json = {};
   try { json = JSON.parse(text); } catch {}

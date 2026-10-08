@@ -65,3 +65,15 @@ test('explains a bad token, a missing repo and no token', async () => {
   await assert.rejects(fileIssue({ repo: 'nonsense', token: 't', title: 'T', body: 'B', fetchFn: answer(201) }), /owner\/name/);
   await assert.rejects(fileIssue({ repo: 'a/b', token: 't', title: 'T', body: 'B', fetchFn: async () => { throw new Error('ENOTFOUND api.github.com'); } }), /Could not reach GitHub/);
 });
+
+test('a label the repository refuses is dropped and the report still goes', async () => {
+  const bodies = [];
+  const fetchFn = async (_url, opts) => {
+    bodies.push(JSON.parse(opts.body));
+    if (bodies.length === 1) return { ok: false, status: 422, text: async () => 'Validation Failed' };
+    return { ok: true, status: 201, text: async () => JSON.stringify({ number: 3, html_url: 'u' }) };
+  };
+  const r = await fileIssue({ repo: 'a/b', token: 't', title: 'T', body: 'B', fetchFn });
+  assert.equal(r.number, 3);
+  assert.deepEqual(bodies.map((b) => b.labels), [['from-the-yard'], []]);
+});
