@@ -5,7 +5,7 @@
 // photographs and reads the plate, the history keeps it. The window talks to
 // all of it over IPC, and gets the camera picture from a local HTTP server
 // (fragmented MP4 from ffmpeg) because <video> wants a URL, not a buffer.
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen } = require('electron');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
@@ -15,6 +15,7 @@ const { ScaleReader, testConnection } = require('./services/scaleReader');
 const { History } = require('./services/history');
 const { WeighingPipeline } = require('./services/weighingPipeline');
 const bugReport = require('./services/bugReport');
+const windowState = require('./windowState');
 const cameraStream = require('./services/cameraStream');
 const cameraDiscovery = require('./services/cameraDiscovery');
 const nportDiscovery = require('./services/nportDiscovery');
@@ -240,9 +241,13 @@ const registerIpc = () => {
 
 // ── Window ────────────────────────────────────────────────────────────────
 const createWindow = () => {
+  // Back where it was last closed, if that spot is still on a screen.
+  const saved = windowState.read(paths.userDataDir());
+  const placement = windowState.placementFor(saved, screen.getAllDisplays());
   win = new BrowserWindow({
     width: 1280,
     height: 800,
+    ...(placement || {}),
     minWidth: 640,
     minHeight: 420,
     backgroundColor: '#000000',
@@ -257,6 +262,8 @@ const createWindow = () => {
     }
   });
   Menu.setApplicationMenu(null);
+  if (placement && saved.maximized) win.maximize();
+  windowState.track(win, paths.userDataDir());
   win.on('enter-full-screen', () => send('window:fullscreen', true));
   win.on('leave-full-screen', () => send('window:fullscreen', false));
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL);

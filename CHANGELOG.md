@@ -2,6 +2,10 @@
 
 Newest first. The app shows this file on the Changelog tab of its settings.
 
+## 0.1.12
+
+- The window opens where it was last closed, at the same size, maximised if it was. If that spot is on a screen that is no longer connected, it opens at the default size on the main screen.
+
 ## 0.1.11
 
 - Bug reports go through a relay built into the app, so a new yard can send one with nothing set up; the GitHub token lives in the relay, not in the installer. The token field on the Bug report tab is now optional.
