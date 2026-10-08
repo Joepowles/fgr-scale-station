@@ -1,8 +1,11 @@
 // What happens when the scale says a truck has settled: take the photo, find
 // the truck in it, read its plate off the full-resolution stream, stamp the
 // weight and plate on the picture, write it all to the history, and keep
-// trying for a better plate while the truck is still on the deck. The Falcon
-// agent's weighWithoutWatcher, for one camera, without a database.
+// trying for a better plate while the truck is still on the deck. If the
+// scale then settles heavier (the rest of the truck, or its trailer, rolled
+// on after the first settle), the same entry is corrected: new weight, new
+// picture, the plate kept. The Falcon agent's weighWithoutWatcher, for one
+// camera, without a database.
 const detector = require('./vehicleDetector');
 const plateReader = require('./plateReader');
 const { captureRtspSnapshot } = require('./rtspSnapshot');
@@ -58,6 +61,60 @@ class WeighingPipeline {
     this.onPlate = onPlate;
     this.log = log;
     this.busy = false;
+    this.current = null; // the weighing of the truck now on the deck: { entry, frame, result, target, plate }
+  }
+
+  // Stamp the weight and plate on a frame the detector has already looked at.
+  async stampPhoto(frame, result, { weightText, plate, capturedAt }) {
+    const s = this.settings();
+    try {
+      return await detector.annotate(frame, {
+        ...result,
+        zone: [],
+        capturedAt,
+        plate: plate && s.plates.stampPhoto !== false ? { text: plate.text, corner: s.plates.overlayCorner } : null,
+        weight: s.scale.stampPhoto !== false ? { text: weightText, corner: s.scale.overlayCorner || oppositeCorner(s.plates.overlayCorner) } : null
+      });
+    } catch (err) {
+      this.log(`could not annotate the photo: ${err.message}`);
+      return frame;
+    }
+  }
+
+  // The deck emptied: whatever was weighed is done with.
+  onCleared() { this.current = null; }
+
+  // The scale settled heavier while the same truck is on the deck: the first
+  // settle caught only part of it. The entry keeps its id, time and plate and
+  // takes the new weight, with a fresh picture of the whole truck if the
+  // camera gives one, or the first picture re-stamped if it does not.
+  async onReweighed(weighing) {
+    const current = this.current;
+    if (!current) return null;
+    if (!current.entry) { current.pendingReweigh = weighing; return null; } // still photographing the first settle; applied once written
+    const s = this.settings();
+    const weightText = formatWeight(weighing.weight, weighing.unit);
+    this.log(`${weightText} on the scale - more of the truck; correcting ${formatWeight(weighing.previous, weighing.unit)}`);
+    const patch = { weight: weighing.weight, unit: weighing.unit, corrected: { from: weighing.previous, at: new Date(weighing.at).toISOString() } };
+    if (!current.frame || !s.camera.streamUrl) return this.history.update(current.entry.id, patch);
+    let frame = current.frame;
+    let result = current.result;
+    let capturedAt = current.capturedAt;
+    try {
+      frame = await captureRtspSnapshot(s.camera.streamUrl, s.camera.username, s.camera.password, 10000);
+      capturedAt = new Date();
+      result = { width: 0, height: 0, detections: [] };
+      try { result = await detector.detect(frame, { minConfidence: 0.25 }); } catch (err) { this.log(`vehicle detection failed: ${err.message}`); }
+      const target = largestVehicle(result.detections);
+      if (target) { target.triggered = true; current.target = target; }
+      current.frame = frame; current.result = result; current.capturedAt = capturedAt;
+    } catch (err) {
+      this.log(`could not re-photograph the truck (${err.message}); re-stamping the first picture`);
+    }
+    const photo = await this.stampPhoto(frame, result, { weightText, plate: current.plate, capturedAt });
+    const updated = this.history.update(current.entry.id, patch, photo);
+    if (updated) current.entry = updated;
+    return updated;
   }
 
   // A one-off read for the Plates tab: whatever is in front of the camera.
@@ -82,8 +139,18 @@ class WeighingPipeline {
   async onWeighed(weighing) {
     const s = this.settings();
     if (!s.scale.capturePhoto) return null;
-    if (!s.camera.streamUrl) { this.log('weighing with no camera set up - logged without a photo'); return this.history.record({ type: 'weighing', weight: weighing.weight, unit: weighing.unit, at: weighing.at }); }
-    if (this.busy) { this.log('a weighing is still being photographed; this one is logged without a picture'); return this.history.record({ type: 'weighing', weight: weighing.weight, unit: weighing.unit, at: weighing.at, note: 'camera busy' }); }
+    // Registered before anything is awaited, so a heavier settle that lands
+    // while the photo is being taken is held against this weighing.
+    const current = { entry: null, frame: null, result: null, target: null, capturedAt: null, plate: null, pendingReweigh: null };
+    this.current = current;
+    const written = async (entry) => {
+      current.entry = entry;
+      if (current.pendingReweigh) { const held = current.pendingReweigh; current.pendingReweigh = null; await this.onReweighed(held); }
+      return entry;
+    };
+    const plain = (note) => written(this.history.record({ type: 'weighing', weight: weighing.weight, unit: weighing.unit, at: weighing.at, note }));
+    if (!s.camera.streamUrl) { this.log('weighing with no camera set up - logged without a photo'); return plain(''); }
+    if (this.busy) { this.log('a weighing is still being photographed; this one is logged without a picture'); return plain('camera busy'); }
     this.busy = true;
     try {
       const weightText = formatWeight(weighing.weight, weighing.unit);
@@ -97,6 +164,7 @@ class WeighingPipeline {
       const wantPlate = !!target && s.plates.enabled && s.scale.readPlate !== false;
       const hdUrl = s.camera.hdStreamUrl || s.camera.streamUrl;
       let plate = null;
+      Object.assign(current, { frame, result, target, capturedAt });
       const tryPlate = async (attempt) => {
         try {
           const hd = await captureRtspSnapshot(hdUrl, s.camera.username, s.camera.password, 12000);
@@ -105,6 +173,7 @@ class WeighingPipeline {
           if (read.confidence < s.plates.minConfidence) { this.log(`plate "${read.text}" at ${Math.round(read.confidence * 100)}%, under the floor (attempt ${attempt})`); return false; }
           if (!plate || read.confidence > plate.confidence) {
             plate = { text: read.text, confidence: read.confidence, readAt: new Date().toISOString() };
+            current.plate = plate;
             this.log(`plate ${plate.text} (${Math.round(plate.confidence * 100)}%, attempt ${attempt})`);
             this.onPlate?.(plate);
             return true;
@@ -116,22 +185,12 @@ class WeighingPipeline {
       };
       if (wantPlate) await tryPlate(1);
 
-      let photo = frame;
-      try {
-        photo = await detector.annotate(frame, {
-          ...result,
-          zone: [],
-          capturedAt,
-          plate: plate && s.plates.stampPhoto !== false ? { text: plate.text, corner: s.plates.overlayCorner } : null,
-          weight: s.scale.stampPhoto !== false ? { text: weightText, corner: s.scale.overlayCorner || oppositeCorner(s.plates.overlayCorner) } : null
-        });
-      } catch (err) {
-        this.log(`could not annotate the photo: ${err.message}`);
-      }
+      const photo = await this.stampPhoto(frame, result, { weightText, plate, capturedAt });
       const entry = this.history.record({
         type: 'weighing', weight: weighing.weight, unit: weighing.unit, at: weighing.at,
         plate, vehicle: target ? { label: target.label, score: target.score } : null
       }, photo);
+      await written(entry);
 
       if (wantPlate) {
         const attempts = Math.max(1, Number(s.plates.retryAttempts) || 10);
@@ -140,12 +199,14 @@ class WeighingPipeline {
           await sleep(wait);
           if (!this.isLoaded()) break;
           if (await tryPlate(attempt)) this.history.update(entry.id, { plate });
+          if (this.current !== current) break; // the deck cleared, or another truck is being weighed
         }
       }
       return entry;
     } catch (err) {
       this.log(`weighing photo failed: ${err.message}`);
-      return this.history.record({ type: 'weighing', weight: weighing.weight, unit: weighing.unit, at: weighing.at, note: `photo failed: ${err.message}` });
+      if (current.entry) return current.entry; // photographed and written; a plate retry failed afterwards
+      return plain(`photo failed: ${err.message}`);
     } finally {
       this.busy = false;
     }

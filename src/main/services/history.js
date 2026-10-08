@@ -66,13 +66,18 @@ class History extends EventEmitter {
     return entry;
   }
 
-  // Change fields on an entry already written (a better plate read). The
-  // log is rewritten; it is small, one line per truck.
-  update(id, patch) {
+  // Change fields on an entry already written (a better plate read, a
+  // corrected weight). A photo replaces the entry's picture under the same
+  // name. The log is rewritten; it is small, one line per truck.
+  update(id, patch, photo = null) {
     const entries = this.read();
     const index = entries.findIndex((e) => e.id === id);
     if (index === -1) return null;
     entries[index] = { ...entries[index], ...patch };
+    if (photo && this.savePhotos) {
+      entries[index].photo = entries[index].photo || `${id}.jpg`;
+      fs.writeFileSync(this.photoPath(entries[index].photo), photo);
+    }
     this.writeAll(entries);
     this.emit('entry', entries[index]);
     return entries[index];

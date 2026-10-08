@@ -2,6 +2,10 @@
 
 Newest first. The app shows this file on the Changelog tab of its settings.
 
+## 0.1.7
+
+- A truck that settles with only part of itself on the deck no longer leaves that partial weight in the history. If the scale settles again heavier than the weight already taken, by more than the wobble tolerance, the same history entry is corrected: it takes the new weight and a fresh picture of the whole truck, keeps its plate, and notes the weight first read. This repeats as more of the truck comes on, a trailer for instance, and a lighter settle (the truck rolling off) is never taken as a correction.
+
 ## 0.1.6
 
 - "Find cameras" now searches every network this PC is on, not just the one the multicast reply came back on. Each network gets the ONVIF multicast probe and then an address-by-address sweep (the probe sent to each address, plus a knock on the usual ONVIF ports), so a camera is found even when multicast is blocked or the camera has discovery turned off. The list says which networks were searched, and the button shows progress.

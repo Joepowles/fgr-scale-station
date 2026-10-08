@@ -47,3 +47,13 @@ test('can keep the log without photos', () => {
   assert.equal(e.photo, null);
   assert.equal(fs.readdirSync(path.join(h.folder, 'photos')).length, 0);
 });
+
+test('an update can replace the photo under the same name', () => {
+  const h = new History({ folder: tmp(), retentionDays: 7 });
+  const e = h.record({ weight: 4740, unit: 'lb' }, Buffer.from('front-axle'));
+  const updated = h.update(e.id, { weight: 38200, corrected: { from: 4740 } }, Buffer.from('whole-truck'));
+  assert.equal(updated.photo, e.photo);
+  assert.equal(fs.readFileSync(h.photoPath(e.photo), 'utf8'), 'whole-truck');
+  assert.equal(h.list()[0].weight, 38200);
+  assert.equal(h.read().length, 1);
+});

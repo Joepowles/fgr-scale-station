@@ -100,7 +100,13 @@ const startScale = () => {
     const entry = await pipeline.onWeighed(weighing);
     if (entry) send('history:entry', entry);
   });
-  scale.on('cleared', () => log('deck clear'));
+  scale.on('reweighed', async (weighing) => {
+    log(`reweighed ${weighing.weight} ${weighing.unit} (was ${weighing.previous})`);
+    send('scale:weighed', weighing);
+    const entry = await pipeline.onReweighed(weighing);
+    if (entry) send('history:entry', entry);
+  });
+  scale.on('cleared', () => { log('deck clear'); pipeline?.onCleared(); });
   log(`reading the scale at ${s.host}:${s.port}`);
 };
 

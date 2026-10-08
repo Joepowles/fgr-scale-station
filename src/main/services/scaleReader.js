@@ -97,6 +97,11 @@ class ScaleReader extends EventEmitter {
         const weighing = { weight: event.weight, unit: event.unit || this.settings.unit || 'lb', gross: event.gross, at: now, plate: null };
         this.setStatus({ lastWeighing: weighing }, true);
         this.emit('weighed', weighing);
+      } else if (event.type === 'reweighed') {
+        // More of the same truck on the deck: the weighing is corrected, its plate kept.
+        const weighing = { ...this.status.lastWeighing, weight: event.weight, unit: event.unit || this.settings.unit || 'lb', gross: event.gross, at: now, previous: event.previous };
+        this.setStatus({ lastWeighing: weighing }, true);
+        this.emit('reweighed', weighing);
       } else if (event.type === 'cleared') {
         this.setStatus({ loaded: false }, true);
         this.emit('cleared', { weight: event.weight, at: now });

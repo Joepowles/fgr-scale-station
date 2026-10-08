@@ -83,3 +83,50 @@ test('a reading that wobbles beyond the tolerance never settles', () => {
   assert.equal(fired, false);
   assert.equal(t.settled, false);
 });
+
+test('a truck that settles heavier after the first settle is reweighed, more than once, never lighter', () => {
+  const t = new WeighingTrigger({ minWeight: 4000, clearWeight: 1000, stableSeconds: 2, stableTolerance: 40 });
+  const events = [];
+  let now = 1000;
+  const feed = (weight, motion = false, ms = 50) => {
+    const e = t.push({ weight, unit: 'lb', gross: true, motion, valid: true }, now);
+    now += ms;
+    if (e) events.push(e);
+  };
+  for (let i = 0; i < 40; i++) feed(140);
+  for (let i = 0; i < 10; i++) feed(1000 + i * 400, true);   // creeping on
+  for (let i = 0; i < 50; i++) feed(4740 + (i % 2) * 10);    // front axle only, steady 2.5 s
+  assert.deepEqual(events.map((e) => e.type), ['weighed']);
+  assert.equal(events[0].weight >= 4740, true);
+  for (let i = 0; i < 20; i++) feed(4760 + i * 20);           // a slow creep within tolerance steps: window never settles at a new value until it holds
+  for (let i = 0; i < 20; i++) feed(10000 + i * 1500, true);  // rolling the rest of the way on
+  for (let i = 0; i < 50; i++) feed(38200 + (i % 3) * 10);    // the whole tractor, steady
+  assert.deepEqual(events.map((e) => e.type), ['weighed', 'reweighed']);
+  assert.equal(events[1].previous, events[0].weight);
+  assert.equal(events[1].weight >= 38200, true);
+  assert.equal(t.lastWeighing.weight, events[1].weight);
+  for (let i = 0; i < 60; i++) feed(38210);                   // still there: nothing more
+  assert.equal(events.length, 2);
+  for (let i = 0; i < 20; i++) feed(40000 + i * 1000, true);  // the trailer comes on
+  for (let i = 0; i < 50; i++) feed(79000 + (i % 2) * 20);
+  assert.deepEqual(events.map((e) => e.type), ['weighed', 'reweighed', 'reweighed']);
+  assert.equal(events[2].previous, events[1].weight);
+  for (let i = 0; i < 20; i++) feed(60000, true);             // part of it rolls off: a lighter settle is not a correction
+  for (let i = 0; i < 50; i++) feed(50000);
+  assert.equal(events.length, 3);
+  for (let i = 0; i < 5; i++) feed(140);
+  assert.deepEqual(events.map((e) => e.type), ['weighed', 'reweighed', 'reweighed', 'cleared']);
+  assert.equal(t.lastWeighing.weight, events[2].weight);
+});
+
+test('a wobble that stays inside the tolerance is not a reweigh', () => {
+  const t = new WeighingTrigger({ minWeight: 4000, clearWeight: 1000, stableSeconds: 1, stableTolerance: 40 });
+  const events = [];
+  let now = 0;
+  for (let i = 0; i < 200; i++) {
+    const e = t.push({ weight: 30000 + (i % 5) * 10, unit: 'lb', gross: true, motion: false, valid: true }, now);
+    now += 50;
+    if (e) events.push(e.type);
+  }
+  assert.deepEqual(events, ['weighed']);
+});

@@ -91,6 +91,12 @@ class FrameSplitter {
 // flag anywhere in that window, and be at or above minWeight. That fires once.
 // It does not fire again until the deck has gone back under clearWeight: a
 // truck shuffling forward a few feet is the same truck.
+//
+// But a truck creeping on slowly can settle with only its front axle on the
+// deck, and a tractor can settle before its trailer is on. So while the deck
+// is loaded, a weight that settles again more than the tolerance above the
+// one already taken is raised as a correction ('reweighed'): the same truck,
+// with more of it on the scale. That can happen more than once.
 class WeighingTrigger {
   constructor({ minWeight = 5000, clearWeight = 1000, stableSeconds = 2, stableTolerance = 40 } = {}) {
     this.minWeight = Number(minWeight) || 0;
@@ -128,6 +134,11 @@ class WeighingTrigger {
       if (reading.weight <= this.clearWeight) {
         this.armed = true;
         return { type: 'cleared', weight: reading.weight, at };
+      }
+      if (settled && this.lastWeighing && reading.weight > this.lastWeighing.weight + this.tolerance) {
+        const previous = this.lastWeighing.weight;
+        this.lastWeighing = { weight: reading.weight, unit: reading.unit, at };
+        return { type: 'reweighed', weight: reading.weight, previous, unit: reading.unit, gross: reading.gross, at };
       }
       return null;
     }

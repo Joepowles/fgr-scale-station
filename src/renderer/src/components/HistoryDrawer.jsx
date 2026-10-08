@@ -38,7 +38,7 @@ export default function HistoryDrawer({ info, onClose }) {
                 <span className="mono font-bold text-emerald-300">{fmtWeight(e.weight, e.unit)}</span>
                 {e.plate?.text && <span className="mono text-xs font-bold px-1.5 py-0.5 rounded bg-gray-100 text-black">{e.plate.text}</span>}
               </div>
-              <div className="text-xs text-gray-500">{fmtTime(e.at)}{e.vehicle ? ` · ${e.vehicle.label}` : ''}{e.note ? ` · ${e.note}` : ''}</div>
+              <div className="text-xs text-gray-500">{fmtTime(e.at)}{e.vehicle ? ` · ${e.vehicle.label}` : ''}{e.corrected ? ` · first read ${fmtWeight(e.corrected.from, e.unit)}` : ''}{e.note ? ` · ${e.note}` : ''}</div>
             </div>
           </button>
         ))}
