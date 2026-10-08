@@ -55,9 +55,9 @@ export default function SupportTab({ draft, patch, info }) {
         )}
       </div>
       <section className="border-t border-gray-800 pt-4 grid grid-cols-1 md:grid-cols-2 gap-5">
-        <label className="block text-xs text-gray-400">GitHub token
-          <input type="password" className={`${inputClass} mono mt-1`} value={sup.githubToken || ''} onChange={(e) => patch('support', { githubToken: e.target.value.trim() })} placeholder="github_pat_…" autoComplete="off" />
-          <span className="text-[11px] text-gray-500">A fine-grained token for the repository below with Issues set to read and write, nothing else. Saved with the other settings when you press Save.</span>
+        <label className="block text-xs text-gray-400">GitHub token (optional)
+          <input type="password" className={`${inputClass} mono mt-1`} value={sup.githubToken || ''} onChange={(e) => patch('support', { githubToken: e.target.value.trim() })} placeholder="Leave empty: reports go through the relay" autoComplete="off" />
+          <span className="text-[11px] text-gray-500">Nothing to set up: reports go through the relay built into the app. A fine-grained token here (Issues read and write on the repository below) files them directly instead, and is saved when you press Save.</span>
         </label>
         <label className="block text-xs text-gray-400">Repository
           <input className={`${inputClass} mono mt-1`} value={sup.repo || ''} onChange={(e) => patch('support', { repo: e.target.value.trim() })} placeholder="owner/name" />

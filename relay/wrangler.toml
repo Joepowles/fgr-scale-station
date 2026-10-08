@@ -1,0 +1,17 @@
+# The bug report relay. Deploy from this folder: wrangler deploy
+# Then: wrangler secret put GITHUB_TOKEN
+name = "scale-station-reports"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+GITHUB_REPO = "Joepowles/fgr-scale-station"
+
+# Ten reports a minute from one address; a yard sends one at a time.
+[[ratelimits]]
+name = "REPORTS"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }
+
+[observability]
+enabled = true

@@ -53,8 +53,11 @@ const DEFAULTS = {
     alwaysOnTop: false,
     startWithWindows: false
   },
-  // The Bug report tab files an issue on GitHub with a token kept here.
+  // The Bug report tab sends reports through the relay (relay/ in the
+  // repository), which holds the GitHub token; nothing to set up at a yard.
+  // A token typed on the tab files the issue directly instead.
   support: {
+    relayUrl: '',
     repo: 'Joepowles/fgr-scale-station',
     githubToken: ''
   },

@@ -119,4 +119,37 @@ const fileIssue = async ({ repo, token, title, body, labels = ['from-the-yard'],
   return { number: json.number, url: json.html_url };
 };
 
-module.exports = { buildReport, fileIssue, redactSettings, titleFor };
+// Send the report through the relay Worker (relay/ in the repository),
+// which holds the GitHub token. Returns { number, url } like fileIssue.
+const sendViaRelay = async ({ relayUrl, title, body, labels = ['from-the-yard'], timeoutMs = 30000, fetchFn = globalThis.fetch }) => {
+  const base = String(relayUrl || '').trim().replace(/\/+$/, '');
+  if (!/^https:\/\//.test(base)) throw new Error('This build has no bug report relay or GitHub token in it. Enter a token on the Bug report tab, or save the report to a file.');
+  if (!fetchFn) throw new Error('No HTTP client available');
+  const controller = new globalThis.AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetchFn(`${base}/report`, {
+      method: 'POST', signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'fgr-scale-station' },
+      body: JSON.stringify({ title, body, labels })
+    });
+  } catch (err) {
+    throw new Error(err.name === 'AbortError' ? `The report relay did not answer within ${Math.round(timeoutMs / 1000)} s` : `Could not reach the report relay: ${err.message}`);
+  } finally {
+    clearTimeout(timer);
+  }
+  const text = await res.text();
+  let json = {};
+  try { json = JSON.parse(text); } catch {}
+  if (!res.ok) throw new Error(json.error || `The report relay answered ${res.status}: ${text.slice(0, 200)}`);
+  return { number: json.number, url: json.url };
+};
+
+// Whichever way is set up: a token on the tab goes straight to GitHub, else the relay.
+const sendReport = async ({ support = {}, builtinRelayUrl = '', title, body, fetchFn }) => {
+  if (String(support.githubToken || '').trim()) return fileIssue({ repo: support.repo, token: support.githubToken, title, body, fetchFn });
+  return sendViaRelay({ relayUrl: support.relayUrl || builtinRelayUrl, title, body, fetchFn });
+};
+
+module.exports = { buildReport, fileIssue, sendViaRelay, sendReport, redactSettings, titleFor };

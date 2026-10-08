@@ -3,7 +3,7 @@
 // node --test tests/bugReport.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildReport, fileIssue, redactSettings } = require('../src/main/services/bugReport');
+const { buildReport, fileIssue, sendViaRelay, sendReport, redactSettings } = require('../src/main/services/bugReport');
 
 const settings = {
   camera: { host: '10.0.0.5', username: 'admin', password: 'Egasi#687', streamUrl: 'rtsp://admin:Egasi%23687@10.0.0.5:554/live' },
@@ -76,4 +76,26 @@ test('a label the repository refuses is dropped and the report still goes', asyn
   const r = await fileIssue({ repo: 'a/b', token: 't', title: 'T', body: 'B', fetchFn });
   assert.equal(r.number, 3);
   assert.deepEqual(bodies.map((b) => b.labels), [['from-the-yard'], []]);
+});
+
+test('sends through the relay, and reads back the relay\'s answer or its error', async () => {
+  const calls = [];
+  const ok = async (url, opts) => { calls.push({ url, body: JSON.parse(opts.body) }); return { ok: true, status: 201, text: async () => JSON.stringify({ number: 9, url: 'https://github.com/Joepowles/fgr-scale-station/issues/9' }) }; };
+  const r = await sendViaRelay({ relayUrl: 'https://scale-station-reports.example.workers.dev/', title: 'T', body: 'B', fetchFn: ok });
+  assert.deepEqual(r, { number: 9, url: 'https://github.com/Joepowles/fgr-scale-station/issues/9' });
+  assert.equal(calls[0].url, 'https://scale-station-reports.example.workers.dev/report');
+  assert.deepEqual(calls[0].body, { title: 'T', body: 'B', labels: ['from-the-yard'] });
+  const limited = async () => ({ ok: false, status: 429, text: async () => JSON.stringify({ error: 'Too many reports from this address; try again in a minute.' }) });
+  await assert.rejects(sendViaRelay({ relayUrl: 'https://r.example', title: 'T', body: 'B', fetchFn: limited }), /Too many reports/);
+  await assert.rejects(sendViaRelay({ relayUrl: '', title: 'T', body: 'B', fetchFn: ok }), /no bug report relay or GitHub token/);
+  await assert.rejects(sendViaRelay({ relayUrl: 'https://r.example', title: 'T', body: 'B', fetchFn: async () => { throw new Error('ENOTFOUND'); } }), /Could not reach the report relay/);
+});
+
+test('a token on the tab goes straight to GitHub; otherwise the relay built into the app', async () => {
+  const urls = [];
+  const fetchFn = async (url) => { urls.push(url); return { ok: true, status: 201, text: async () => '{"number":1,"url":"u","html_url":"u"}' }; };
+  await sendReport({ support: { githubToken: 't', repo: 'a/b' }, builtinRelayUrl: 'https://r.example', title: 'T', body: 'B', fetchFn });
+  await sendReport({ support: { githubToken: '', repo: 'a/b' }, builtinRelayUrl: 'https://r.example', title: 'T', body: 'B', fetchFn });
+  await sendReport({ support: { relayUrl: 'https://mine.example' }, builtinRelayUrl: 'https://r.example', title: 'T', body: 'B', fetchFn });
+  assert.deepEqual(urls, ['https://api.github.com/repos/a/b/issues', 'https://r.example/report', 'https://mine.example/report']);
 });

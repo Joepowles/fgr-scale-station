@@ -199,8 +199,8 @@ const registerIpc = () => {
   };
   ipcMain.handle('support:send', async (_e, { description, repo, token } = {}) => {
     const report = buildBugReport(description);
-    const sup = settings().support || {};
-    const issue = await bugReport.fileIssue({ repo: repo || sup.repo, token: token || sup.githubToken, title: report.title, body: report.body });
+    const sup = { ...(settings().support || {}), ...(repo ? { repo } : {}), ...(token ? { githubToken: token } : {}) };
+    const issue = await bugReport.sendReport({ support: sup, builtinRelayUrl: settingsStore.DEFAULTS.support.relayUrl, title: report.title, body: report.body });
     log(`bug report filed: ${issue.url}`);
     return issue;
   });

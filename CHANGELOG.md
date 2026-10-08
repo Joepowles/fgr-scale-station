@@ -2,6 +2,10 @@
 
 Newest first. The app shows this file on the Changelog tab of its settings.
 
+## 0.1.11
+
+- Bug reports go through a relay built into the app, so a new yard can send one with nothing set up; the GitHub token lives in the relay, not in the installer. The token field on the Bug report tab is now optional.
+
 ## 0.1.10
 
 - A bug report still goes through when the repository lacks the label the app puts on it.

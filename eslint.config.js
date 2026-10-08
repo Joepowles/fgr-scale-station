@@ -15,5 +15,15 @@ module.exports = [
       }
     },
     rules: { 'no-empty': ['error', { allowEmptyCatch: true }], 'no-unused-vars': ['error', { argsIgnorePattern: '^_' }] }
+  },
+  // The relay Worker and its test: ES modules on the web platform.
+  {
+    files: ['relay/src/**/*.js', 'tests/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: { fetch: 'readonly', Request: 'readonly', Response: 'readonly', URL: 'readonly', console: 'readonly' }
+    },
+    rules: { 'no-empty': ['error', { allowEmptyCatch: true }], 'no-unused-vars': ['error', { argsIgnorePattern: '^_' }] }
   }
 ];
