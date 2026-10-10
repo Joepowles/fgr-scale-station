@@ -2,13 +2,16 @@
 """A stand-in for the yard's scale camera: an RTSP server sending HEVC, as
 the real cameras do, with a moving test picture and the time burned in.
 
-    python3 tools/fake-camera.py [port]       # default 8554
+    python3 tools/fake-camera.py [port] [--image photo.jpg]   # default 8554
+
+With --image the picture is that photo (a truck with a plate, say) instead
+of a test pattern, for trying the plate reader.
 
 Then rtsp://admin:secret@127.0.0.1:8554/sub (960x480) and /main (1920x1080).
 Needs GStreamer's RTSP server (Debian: gir1.2-gst-rtsp-server-1.0,
 python3-gi, gstreamer1.0-plugins-{good,bad,ugly}).
 """
-import sys
+import argparse
 
 import gi
 
@@ -17,14 +20,24 @@ gi.require_version("GstRtspServer", "1.0")
 from gi.repository import GLib, Gst, GstRtspServer  # noqa: E402
 
 Gst.init(None)
-port = sys.argv[1] if len(sys.argv) > 1 else "8554"
+parser = argparse.ArgumentParser()
+parser.add_argument("port", nargs="?", default="8554")
+parser.add_argument("--image", help="a JPEG to show instead of the test pattern")
+options = parser.parse_args()
+port = options.port
 
 
 def factory(width, height):
+    if options.image:
+        source = (
+            f"filesrc location=\"{options.image}\" ! jpegdec ! imagefreeze is-live=true "
+            f"! videoscale add-borders=true ! videoconvert ! video/x-raw,width={width},height={height},framerate=15/1"
+        )
+    else:
+        source = f"videotestsrc is-live=true pattern=ball ! video/x-raw,width={width},height={height},framerate=15/1"
     f = GstRtspServer.RTSPMediaFactory()
     f.set_launch(
-        f"( videotestsrc is-live=true pattern=ball ! video/x-raw,width={width},height={height},framerate=15/1 "
-        "! clockoverlay font-desc=\"Sans 36\" ! videoconvert "
+        f"( {source} ! clockoverlay font-desc=\"Sans 36\" ! videoconvert "
         "! x265enc tune=zerolatency speed-preset=ultrafast key-int-max=30 ! rtph265pay name=pay0 pt=96 )"
     )
     f.set_shared(True)

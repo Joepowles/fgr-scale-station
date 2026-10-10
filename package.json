@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "vite build",
     "tauri": "tauri",
-    "fetch:ffmpeg": "node scripts/fetch-ffmpeg.cjs"
+    "fetch:ffmpeg": "node scripts/fetch-ffmpeg.cjs",
+    "build:python": "node scripts/build-python.cjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2"

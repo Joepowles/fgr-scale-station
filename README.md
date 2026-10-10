@@ -19,16 +19,23 @@ the same React app, copied unchanged; `src/station.js` rebuilds the
 | `services/rtspSnapshot.js`     | `camera/snapshot.rs`, `camera/rtsp.rs` | done |
 | ONVIF discovery                | —                          | not yet (stream URLs can be typed in) |
 | vehicle detector               | —                          | dropped: the scale is the trigger |
-| plate reader                   | —                          | not yet |
 | `services/history.js`          | `history.rs`               | done, tests ported and extended |
 | local HTTP server              | `server.rs`                | done: /stream, /snapshot, /photo |
-| `services/weighingPipeline.js` | `pipeline.rs`              | logs weighings; photo and plate next |
+| `services/weighingPipeline.js` | `pipeline.rs`              | done, without the vehicle detector |
+| `services/plateReader.js`      | `plates.rs`                | done; same Python worker, as a child process |
+| photo stamping (`annotate`)    | `stamp.rs`                 | done; font compiled in |
 | bug report, updater            | —                          | not yet |
 
 Calls for the parts not yet ported answer "not ported to Rust yet".
 
 Deliberate differences from the Electron app:
 
+- No vehicle detector: the scale says when a truck is there, and fast-alpr
+  finds the plate in the whole full-resolution frame rather than in a crop
+  around a detected vehicle.
+- Snapshots decode keyframes only (`-skip_frame nokey`), so a photo taken
+  by joining the stream between keyframes is never a grey smear. It can
+  wait up to one keyframe interval longer for the picture.
 - Its `FrameSplitter` drops the last character of a frame that ends at an
   STX with no line ending after it, which loses the motion flag on
   indicators that send no CR/LF. The Rust one keeps it
@@ -67,6 +74,21 @@ The tests that use it are ignored by default:
 
     cargo test fake_camera -- --ignored --nocapture
 
+### The plate reader
+
+The app runs `resources/python-worker/plate_reader_worker.py` (the Electron
+app's, unchanged) under a bundled Python on Windows. To develop elsewhere,
+point it at a venv:
+
+    python3 -m venv .venv-plates
+    .venv-plates/bin/pip install fast-alpr onnxruntime
+    PLATE_READER_PYTHON=$PWD/.venv-plates/bin/python npm run tauri dev
+
+and `python3 tools/fake-camera.py --image photo-with-a-plate.jpg` gives it
+something to read. The test that drives the real worker:
+
+    PLATE_SAMPLE=photo-with-a-plate.jpg cargo test plate_reader -- --ignored --nocapture
+
 ### ffmpeg
 
 The app runs ffmpeg as a Tauri sidecar (`bundle.externalBin`), which has to
@@ -90,4 +112,5 @@ already has):
 
     npm install
     node scripts/fetch-ffmpeg.cjs x86_64-pc-windows-msvc   # BtbN's static build
+    node scripts/build-python.cjs                          # embedded Python + fast-alpr + models
     npm run tauri build        # NSIS installer under src-tauri/target/release/bundle

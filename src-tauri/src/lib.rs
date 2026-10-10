@@ -1,17 +1,20 @@
 //! Falcon Scale Station - the main process, in Rust.
 //!
-//! One window, one camera, one scale. So far the scale, the camera picture
-//! and the history are here: the reader raises a weighing, the pipeline logs
-//! it, the window shows it over the live picture. ONVIF discovery, the plate
-//! reader and the updater are still the Electron app's; the window's calls
-//! for those answer "not ported yet" (see src/station.js).
+//! One window, one camera, one scale. The scale reader raises a weighing;
+//! the pipeline photographs the truck, reads its plate, stamps both on the
+//! picture and writes it to the history; the window shows the live picture
+//! with the weight and plate over it. ONVIF discovery, the bug report and the
+//! updater are still the Electron app's; the window's calls for those answer
+//! "not ported yet" (see src/station.js).
 
 mod camera;
 mod history;
 mod pipeline;
+mod plates;
 mod scale;
 mod server;
 mod settings;
+mod stamp;
 
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
@@ -41,11 +44,12 @@ pub(crate) struct AppState {
     data_dir: PathBuf,
     server_port: u16,
     pub(crate) settings: Mutex<SettingsStore>,
-    scale: Mutex<Option<ScaleReader>>,
+    pub(crate) scale: Mutex<Option<ScaleReader>>,
     /// None only when the history folder cannot be made.
     pub(crate) history: Mutex<Option<History>>,
     pipeline: UnboundedSender<pipeline::Event>,
     pub(crate) streams: camera::stream::Streams,
+    pub(crate) plates: plates::PlateReader,
     log: Mutex<VecDeque<String>>,
 }
 
@@ -176,6 +180,11 @@ fn apply_settings(app: &AppHandle) {
     start_scale(app);
     // The stream URLs or login may have changed; viewers reconnect to the new ones.
     app.state::<AppState>().streams.stop_all();
+    // Load the plate models now rather than when the first truck arrives.
+    if app.state::<AppState>().settings.lock().unwrap().get()["plates"]["enabled"] != false {
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move { handle.state::<AppState>().plates.warm_up().await });
+    }
     let window = app.state::<AppState>().settings.lock().unwrap().get()["window"].clone();
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.set_always_on_top(window["alwaysOnTop"].as_bool().unwrap_or(false));
@@ -194,7 +203,7 @@ fn app_info(app: AppHandle, state: State<AppState>) -> Value {
         "version": app.package_info().version.to_string(),
         "serverPort": state.server_port,
         "ffmpeg": camera::ffmpeg::available(),
-        "plateReader": { "installed": false, "ready": false, "lastError": "not ported to Rust yet" },
+        "plateReader": state.plates.status(),
         "vehicleModel": false,
         "userData": state.data_dir,
         "settingsFile": state.settings.lock().unwrap().file(),
@@ -267,6 +276,16 @@ async fn camera_snapshot_test(args: SnapshotArgs) -> Result<Value, String> {
     }))
 }
 
+#[tauri::command]
+async fn plates_read_now(app: AppHandle) -> Result<Value, String> {
+    pipeline::read_plate_now(&app).await
+}
+
+#[tauri::command]
+fn plates_status(state: State<AppState>) -> plates::Status {
+    state.plates.status()
+}
+
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(default)]
 struct ListArgs {
@@ -320,8 +339,11 @@ pub fn run() {
             fs::create_dir_all(&data_dir)?;
             let handle = app.handle().clone();
             let log_handle = handle.clone();
-            let streams = camera::stream::Streams::new(std::sync::Arc::new(move |line| log(&log_handle, line)));
+            let logger: camera::stream::Log = std::sync::Arc::new(move |line| log(&log_handle, line));
+            let streams = camera::stream::Streams::new(logger.clone());
+            let plates = plates::PlateReader::new(plates::Paths::under(&app.path().resource_dir()?), logger);
             app.manage(AppState {
+                plates,
                 streams,
                 settings: Mutex::new(SettingsStore::load(&data_dir)),
                 data_dir,
@@ -346,6 +368,8 @@ pub fn run() {
             scale_test,
             scale_discover,
             camera_snapshot_test,
+            plates_read_now,
+            plates_status,
             history_list,
             history_stats,
             history_prune,

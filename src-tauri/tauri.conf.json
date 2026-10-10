@@ -38,6 +38,9 @@
     ],
     "externalBin": [
       "binaries/ffmpeg"
-    ]
+    ],
+    "resources": {
+      "../resources/python-worker/plate_reader_worker.py": "python-worker/plate_reader_worker.py"
+    }
   }
 }

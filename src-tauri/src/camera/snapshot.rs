@@ -9,21 +9,20 @@ use super::{ffmpeg, rtsp};
 /// `pass` are put in. The error is fit to show: no password in it.
 pub async fn capture(url: &str, user: &str, pass: &str, wait: Duration) -> Result<Vec<u8>, String> {
     let full = rtsp::inject_credentials(url, user, pass);
+    // One flag and its value per line.
+    #[rustfmt::skip]
     let args = [
-        "-loglevel",
-        "error",
-        "-rtsp_transport",
-        "tcp", // TCP is more reliable than UDP for LAN cameras
-        "-i",
-        &full,
-        "-frames:v",
-        "1",
-        "-q:v",
-        "2", // high quality JPEG (1 = best, 31 = worst)
-        "-f",
-        "image2pipe",
-        "-c:v",
-        "mjpeg",
+        "-loglevel", "error",
+        "-rtsp_transport", "tcp", // TCP is more reliable than UDP for LAN cameras
+        // Keyframes only: joining a stream between keyframes, the first frame
+        // decoded can be a grey smear with nothing to build on. This waits for
+        // the next whole picture instead, at most one keyframe interval.
+        "-skip_frame", "nokey",
+        "-i", &full,
+        "-frames:v", "1",
+        "-q:v", "2", // high quality JPEG (1 = best, 31 = worst)
+        "-f", "image2pipe",
+        "-c:v", "mjpeg",
         "pipe:1",
     ];
     let child = ffmpeg::command(&args).and_then(|mut c| c.spawn()).map_err(|e| e.to_string())?;

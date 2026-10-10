@@ -227,28 +227,21 @@ enum Ended {
 async fn run_ffmpeg(camera: &Camera, url: &str, log: &Log) -> Ended {
     let bitrate = std::env::var("CAMERA_STREAM_BITRATE").unwrap_or_else(|_| "1500k".into());
     let fps = std::env::var("CAMERA_STREAM_FPS").ok();
+    // One flag and its value per line.
+    #[rustfmt::skip]
     let mut args = vec![
-        "-loglevel",
-        "error",
-        "-rtsp_transport",
-        "tcp",
-        "-fflags",
-        "nobuffer",
-        "-i",
-        url,
+        "-loglevel", "error",
+        "-rtsp_transport", "tcp",
+        "-fflags", "nobuffer",
+        "-i", url,
         "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-tune",
-        "zerolatency",
-        "-b:v",
-        &bitrate,
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-tune", "zerolatency",
+        "-b:v", &bitrate,
         // A keyframe about every two seconds. Fragments are cut at keyframes,
         // so this is also how long a new viewer waits for playable video.
-        "-g",
-        "30",
+        "-g", "30",
     ];
     if let Some(fps) = fps.as_deref() {
         args.extend(["-r", fps]);
