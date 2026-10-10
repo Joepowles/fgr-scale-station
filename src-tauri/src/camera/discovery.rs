@@ -179,11 +179,23 @@ pub async fn onvif_at(host: Ipv4Addr, port: u16) -> Option<(String, bool)> {
     }
 }
 
-/// The make and model, when the camera will say (many will without a login).
+/// The make and model, when the camera will say. Asked without a login
+/// first: many cameras answer anyway, and a camera that locks accounts after
+/// failed logins (one here allows 30) doesn't count a request with none. Only
+/// if it refuses is the login sent, signed in the camera's clock.
 async fn describe(device_url: &str, username: &str, password: &str) -> (String, String) {
-    let client = Client::new(device_url, username, password);
-    let Ok(xml) = client.request(device_url, &format!("<tds:GetDeviceInformation xmlns:tds=\"{NS_TDS}\"/>")).await else {
-        return (String::new(), String::new());
+    let body = format!("<tds:GetDeviceInformation xmlns:tds=\"{NS_TDS}\"/>");
+    let xml = match Client::new(device_url, "", "").request(device_url, &body).await {
+        Ok(xml) => xml,
+        Err(Error::Fault(_) | Error::Http(_)) if !username.is_empty() => {
+            let mut client = Client::new(device_url, username, password);
+            let _ = client.connect().await;
+            match client.request(device_url, &body).await {
+                Ok(xml) => xml,
+                Err(_) => return (String::new(), String::new()),
+            }
+        }
+        Err(_) => return (String::new(), String::new()),
     };
     let field = |name| onvif::text_of(&xml, name);
     let hardware = [field("Manufacturer"), field("HardwareId")].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
@@ -411,19 +423,117 @@ mod tests {
         assert_eq!(onvif_at(Ipv4Addr::LOCALHOST, port).await, None);
     }
 
+    /// A stand-in camera for GetDeviceInformation that notes, for every
+    /// request, whether it carried a login; `open` cameras answer without one.
+    async fn serve_device_info(open: bool) -> (String, std::sync::Arc<std::sync::Mutex<Vec<bool>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/onvif/device_service", listener.local_addr().unwrap());
+        let logins = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = logins.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = vec![0u8; 8192];
+                let n = socket.read(&mut request).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&request[..n]);
+                let body = if request.contains("GetSystemDateAndTime") {
+                    "<s:Envelope><s:Body><tds:GetSystemDateAndTimeResponse/></s:Body></s:Envelope>"
+                } else {
+                    let login = request.contains("UsernameToken");
+                    seen.lock().unwrap().push(login);
+                    if open || login {
+                        "<s:Envelope><s:Body><tds:GetDeviceInformationResponse><tds:Manufacturer>Fakecam</tds:Manufacturer>\
+                         <tds:Model>FC-2000</tds:Model><tds:HardwareId>1.0</tds:HardwareId></tds:GetDeviceInformationResponse></s:Body></s:Envelope>"
+                    } else {
+                        "<s:Envelope><s:Body><s:Fault><s:Reason><s:Text>Sender not Authorized</s:Text></s:Reason></s:Fault></s:Body></s:Envelope>"
+                    }
+                };
+                let status = if body.contains("Fault") { 400 } else { 200 };
+                let reply =
+                    format!("HTTP/1.1 {status} X\r\nContent-Type: application/soap+xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = socket.write_all(reply.as_bytes()).await;
+            }
+        });
+        (url, logins)
+    }
+
+    #[tokio::test]
+    async fn a_camera_that_answers_without_a_login_is_never_sent_the_password() {
+        let (url, logins) = serve_device_info(true).await;
+        assert_eq!(describe(&url, "admin", "maybe-wrong").await, ("FC-2000".into(), "Fakecam 1.0".into()));
+        assert_eq!(*logins.lock().unwrap(), [false]);
+    }
+
+    #[tokio::test]
+    async fn a_camera_that_refuses_is_asked_again_with_the_login() {
+        let (url, logins) = serve_device_info(false).await;
+        assert_eq!(describe(&url, "admin", "secret").await, ("FC-2000".into(), "Fakecam 1.0".into()));
+        assert_eq!(*logins.lock().unwrap(), [false, true]);
+    }
+
+    #[tokio::test]
+    async fn with_no_username_a_refusing_camera_just_goes_unnamed() {
+        let (url, logins) = serve_device_info(false).await;
+        assert_eq!(describe(&url, "", "").await, (String::new(), String::new()));
+        assert_eq!(*logins.lock().unwrap(), [false]);
+    }
+
     // The real search, so only on request, with tools/fake-onvif.py running:
-    //   cargo test finds_cameras_on_this_lan -- --ignored --nocapture
+    //   CAMERA_USER=admin CAMERA_PASSWORD=... cargo test finds_cameras_on_this_lan -- --ignored --nocapture
     #[tokio::test]
     #[ignore]
     async fn finds_cameras_on_this_lan() {
+        let user = std::env::var("CAMERA_USER").unwrap_or_else(|_| "admin".into());
+        let password = std::env::var("CAMERA_PASSWORD").unwrap_or_else(|_| "secret".into());
         let started = Instant::now();
-        let found = discover("admin", "secret", 80, |_, _, _| {}).await;
+        let found = discover(&user, &password, 80, |_, _, _| {}).await;
         println!("{found:#?}\nin {:?}", started.elapsed());
         for camera in &found.cameras {
-            let args = StreamsArgs { device_url: camera.device_url.clone(), username: "admin".into(), password: "secret".into(), ..Default::default() };
+            let args = StreamsArgs { device_url: camera.device_url.clone(), username: user.clone(), password: password.clone(), ..Default::default() };
             println!("{} streams: {:#?}", camera.host, streams_of(args).await);
-            let wrong = StreamsArgs { device_url: camera.device_url.clone(), username: "admin".into(), password: "wrong".into(), ..Default::default() };
-            println!("{} with a wrong password: {:?}", camera.host, streams_of(wrong).await.map(|s| s.len()));
+            if std::env::var("TRY_WRONG_PASSWORD").is_ok() {
+                let wrong = StreamsArgs { device_url: camera.device_url.clone(), username: user.clone(), password: "wrong".into(), ..Default::default() };
+                println!("{} with a wrong password: {:?}", camera.host, streams_of(wrong).await.map(|s| s.len()));
+            }
+        }
+    }
+
+    // For a camera discovery can't reach, such as one across a VPN:
+    //   CAMERA_HOST=192.168.101.229 CAMERA_PASSWORD=... SNAPSHOT_DIR=/tmp cargo test talks_to_camera_at -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn talks_to_camera_at() {
+        let host: Ipv4Addr = std::env::var("CAMERA_HOST").expect("CAMERA_HOST").parse().unwrap();
+        let user = std::env::var("CAMERA_USER").unwrap_or_else(|_| "admin".into());
+        let password = std::env::var("CAMERA_PASSWORD").unwrap_or_else(|_| "secret".into());
+        let mut at = None;
+        for port in ONVIF_PORTS {
+            if let Some(found) = onvif_at(host, port).await {
+                at = Some(found);
+                break;
+            }
+        }
+        let (device_url, _) = at.expect("no ONVIF service on the usual ports");
+        println!("ONVIF at {device_url}");
+        println!("described as {:?}", describe(&device_url, &user, &password).await);
+        let args = StreamsArgs { device_url: device_url.clone(), username: user.clone(), password: password.clone(), ..Default::default() };
+        let streams = streams_of(args).await;
+        println!("streams: {streams:#?}");
+        // Real cameras count failed logins and lock the account, so only on request.
+        if std::env::var("TRY_WRONG_PASSWORD").is_ok() {
+            let wrong = StreamsArgs { device_url, username: user.clone(), password: "wrong".into(), ..Default::default() };
+            println!("with a wrong password: {:?}", streams_of(wrong).await.map(|s| s.len()));
+        }
+        let Ok(dir) = std::env::var("SNAPSHOT_DIR") else { return };
+        for (i, stream) in streams.unwrap_or_default().iter().enumerate() {
+            let started = Instant::now();
+            match crate::camera::snapshot::capture(&stream.stream_uri, &user, &password, Duration::from_secs(15)).await {
+                Ok(jpeg) => {
+                    let path = format!("{dir}/stream{i}.jpg");
+                    std::fs::write(&path, &jpeg).unwrap();
+                    println!("{path}: {:?} in {:?}", crate::camera::snapshot::jpeg_size(&jpeg), started.elapsed());
+                }
+                Err(e) => println!("stream {i} snapshot failed: {e}"),
+            }
         }
     }
 }

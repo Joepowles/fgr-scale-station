@@ -232,7 +232,8 @@ fn utc_date_time(xml: &str) -> Option<DateTime<Utc>> {
 /// The media profiles in a GetProfiles reply, with each one's encoder
 /// resolution so a list can say which is the big stream.
 pub fn parse_profiles(xml: &str) -> Vec<Profile> {
-    static PROFILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<(?:[A-Za-z0-9_.-]+:)?Profiles\b([^>]*)>(.*?)</(?:[A-Za-z0-9_.-]+:)?Profiles>").unwrap());
+    static PROFILE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?is)<(?:[A-Za-z0-9_.-]+:)?Profiles\b([^>]*)>(.*?)</(?:[A-Za-z0-9_.-]+:)?Profiles>").unwrap());
     static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"token="([^"]+)""#).unwrap());
     PROFILE
         .captures_iter(xml)
