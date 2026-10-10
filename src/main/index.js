@@ -16,6 +16,7 @@ const { History } = require('./services/history');
 const { WeighingPipeline } = require('./services/weighingPipeline');
 const bugReport = require('./services/bugReport');
 const windowState = require('./windowState');
+const updateChannel = require('./updateChannel');
 const cameraStream = require('./services/cameraStream');
 const cameraDiscovery = require('./services/cameraDiscovery');
 const nportDiscovery = require('./services/nportDiscovery');
@@ -149,6 +150,7 @@ const applySettings = () => {
     if (settings().window.fullscreen !== win.isFullScreen()) win.setFullScreen(!!settings().window.fullscreen);
   }
   app.setLoginItemSettings({ openAtLogin: !!settings().window.startWithWindows });
+  applyUpdateChannel();
 };
 
 // ── IPC ───────────────────────────────────────────────────────────────────
@@ -220,6 +222,7 @@ const registerIpc = () => {
     }
     return '';
   });
+  ipcMain.handle('app:open-releases', () => shell.openExternal('https://github.com/Joepowles/fgr-scale-station/releases'));
   ipcMain.handle('window:toggle-fullscreen', () => { win.setFullScreen(!win.isFullScreen()); return win.isFullScreen(); });
   ipcMain.handle('window:is-fullscreen', () => win.isFullScreen());
   // The downloaded update is applied by quitting into the installer, which
@@ -270,6 +273,25 @@ const createWindow = () => {
   else win.loadFile(path.join(__dirname, '../renderer/index.html'));
 };
 
+// The channel from the settings, put on the updater. Called at start and
+// again when settings are saved; a change is followed by a check.
+let appliedChannel = null;
+const applyUpdateChannel = () => {
+  if (!updater) return;
+  const channel = updateChannel.normalize(settings().updates?.channel);
+  if (channel === appliedChannel) return;
+  const opts = updateChannel.updaterOptionsFor(channel, app.getVersion());
+  // Setting the channel switches allowDowngrade on by itself, so that flag
+  // goes last, to what the channel rules say.
+  updater.channel = opts.channel;
+  updater.allowPrerelease = opts.allowPrerelease;
+  updater.allowDowngrade = opts.allowDowngrade;
+  const first = appliedChannel === null;
+  appliedChannel = channel;
+  log(`updates: ${channel} channel`);
+  if (!first) updater.checkForUpdates().catch(() => {});
+};
+
 const startUpdater = () => {
   if (!app.isPackaged) return;
   try {
@@ -277,6 +299,7 @@ const startUpdater = () => {
     updater = autoUpdater;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
+    applyUpdateChannel();
     autoUpdater.on('checking-for-update', () => send('update:status', { state: 'checking' }));
     autoUpdater.on('update-not-available', (info) => send('update:status', { state: 'none', version: info?.version || app.getVersion() }));
     autoUpdater.on('update-available', (info) => { log(`update ${info.version} found, downloading`); send('update:status', { state: 'downloading', version: info.version }); });

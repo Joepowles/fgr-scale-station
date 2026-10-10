@@ -3,7 +3,8 @@ import React, { useEffect, useState } from 'react';
 // What changed in each version, from the CHANGELOG.md shipped with the app.
 // Rendered by hand: headings are versions, dashes are items. Nothing fancier
 // is in that file, so nothing fancier is needed here.
-export default function ChangelogTab({ info }) {
+export default function ChangelogTab({ draft, patch, info }) {
+  const channel = draft?.updates?.channel === 'beta' ? 'beta' : 'stable';
   const [text, setText] = useState('');
   const [status, setStatus] = useState(null);
   const [checking, setChecking] = useState(false);
@@ -46,6 +47,21 @@ export default function ChangelogTab({ info }) {
           {checking ? 'Checking…' : 'Check for updates'}
         </button>
       </div>
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <label className="block text-xs text-gray-400">Update channel
+          <select className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1.5 text-sm text-gray-100 mt-1" value={channel} onChange={(e) => patch('updates', { channel: e.target.value })}>
+            <option value="stable">Stable - releases only</option>
+            <option value="beta">Beta - pre-releases too, for trying things first</option>
+          </select>
+          <span className="text-[11px] text-gray-500">{channel === 'beta'
+            ? 'This PC takes beta builds as they are published, and any stable release newer than its beta. Switching back to Stable puts it on the stable release at the next check, even if that is older.'
+            : 'This PC only takes stable releases. Pick Beta on the one PC that tries new builds first.'} Applies when you press Save.</span>
+        </label>
+        <div className="text-xs text-gray-400">All releases, with their installers
+          <div className="mt-1"><button type="button" onClick={() => window.station.updates.openReleases()} className="px-3 py-1.5 text-sm rounded-md bg-gray-700 hover:bg-gray-600 text-gray-100">Open the releases page</button></div>
+          <span className="text-[11px] text-gray-500">For installing a build by hand, such as a beta that is a different kind of app.</span>
+        </div>
+      </section>
       {!sections.length && <p className="text-sm text-gray-500">No changelog in this build.</p>}
       {sections.map((s) => (
         <section key={s.version} className="border-t border-gray-800 pt-3">

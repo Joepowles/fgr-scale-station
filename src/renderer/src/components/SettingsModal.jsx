@@ -63,7 +63,7 @@ export default function SettingsModal({ settings, info, onSaved, onClose }) {
           {tab === 'plates' && <PlatesTab draft={draft} patch={patch} info={info} />}
           {tab === 'scale' && <ScaleTab draft={draft} patch={patch} info={info} />}
           {tab === 'history' && <HistoryTab draft={draft} patch={patch} info={info} />}
-          {tab === 'changelog' && <ChangelogTab info={info} />}
+          {tab === 'changelog' && <ChangelogTab draft={draft} patch={patch} info={info} />}
           {tab === 'support' && <SupportTab draft={draft} patch={patch} info={info} />}
         </div>
         <div className="flex items-center justify-between gap-3 px-5 py-3 border-t border-gray-800">

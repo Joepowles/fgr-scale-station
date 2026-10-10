@@ -53,6 +53,11 @@ const DEFAULTS = {
     alwaysOnTop: false,
     startWithWindows: false
   },
+  // stable: releases only. beta: pre-releases too, for the PC that tries
+  // things first. See src/main/updateChannel.js.
+  updates: {
+    channel: 'stable'
+  },
   // The Bug report tab sends reports through the relay (relay/ in the
   // repository), which holds the GitHub token; nothing to set up at a yard.
   // A token typed on the tab files the issue directly instead.

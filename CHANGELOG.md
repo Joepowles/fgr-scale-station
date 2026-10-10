@@ -4,6 +4,8 @@ Newest first. The app shows this file on the Changelog tab of its settings.
 
 ## 0.1.13
 
+- Two update channels, chosen on the Changelog tab. Stable, the default, takes releases only. Beta also takes pre-release builds as they are published, for the one PC that tries things first, and goes back to the stable release when switched back. A button opens the releases page for installing a build by hand.
+
 - A truck still rocking on the deck is no longer taken as settled on indicators that send no line endings: the motion flag at the end of each reading was being cut off.
 - With "Save log" off, saved photos are kept for the retention period. Before, every photo was deleted when the app started and every hour after.
 - The live view no longer freezes now and then when it is opened: a viewer could start partway through a frame and the player stalled on it.
