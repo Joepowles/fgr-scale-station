@@ -74,10 +74,11 @@ class FrameSplitter {
     const lf = this.pending.indexOf('\n');
     const stx = this.pending.indexOf(String.fromCharCode(STX), 1);
     if (lf === -1 && stx === -1) return -1;
-    if (lf === -1) return stx - 1 >= 0 ? stx - 1 : -1;
-    if (stx === -1 || lf < stx) return lf;
-    // An STX before the next LF starts a new frame: the bytes before it are
-    // a frame of their own (cut just before the STX so it stays with the next).
+    if (stx === -1 || (lf !== -1 && lf < stx)) return lf;
+    // An STX before the next LF (or with no LF at all) starts a new frame:
+    // the bytes before it are a frame of their own. An LF goes in just before
+    // the STX, so the cut drops that and not the frame's last character (the
+    // status letter), and the STX stays with the next frame.
     this.pending = `${this.pending.slice(0, stx)}\n${this.pending.slice(stx)}`;
     return stx;
   }

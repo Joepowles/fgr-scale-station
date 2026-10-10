@@ -70,3 +70,19 @@ test('a plain web server is not a camera', async () => {
     assert.equal(await onvifAt('127.0.0.1', s.port), null);
   } finally { s.close(); }
 });
+
+test('reads the reason out of a fault whose prefix has a hyphen in it', () => {
+  // What the yard camera (VD-2FT81-ZAS) sends for a wrong password. The
+  // SOAP-ENV prefix used to defeat the match and the reason read "SOAP fault".
+  const { parseFault } = require('../src/main/services/onvifEventClient');
+  const xml = '<?xml version="1.0"?><SOAP-ENV:Envelope><SOAP-ENV:Body><SOAP-ENV:Fault><SOAP-ENV:Code><SOAP-ENV:Value>SOAP-ENV:Sender</SOAP-ENV:Value></SOAP-ENV:Code>'
+    + '<SOAP-ENV:Reason><SOAP-ENV:Text xml:lang="en">Sender not Authorized. Invalid username or password!</SOAP-ENV:Text></SOAP-ENV:Reason>'
+    + '</SOAP-ENV:Fault></SOAP-ENV:Body></SOAP-ENV:Envelope>';
+  assert.equal(parseFault(xml), 'Sender not Authorized. Invalid username or password!');
+});
+
+test('reads XAddrs whatever the prefix', () => {
+  const xml = '<SOAP-ENV:Envelope><SOAP-ENV:Body><wsdd-1:ProbeMatches><wsdd-1:ProbeMatch><wsdd-1:XAddrs>http://192.168.1.229:8899/onvif/device_service</wsdd-1:XAddrs>'
+    + '</wsdd-1:ProbeMatch></wsdd-1:ProbeMatches></SOAP-ENV:Body></SOAP-ENV:Envelope>';
+  assert.equal(parseProbeMatch(xml, '192.168.1.229').deviceUrl, 'http://192.168.1.229:8899/onvif/device_service');
+});

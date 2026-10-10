@@ -46,6 +46,15 @@ test('splits on STX when the indicator sends no line ending', () => {
   assert.deepEqual(readings.map((r) => r.weight), [140, 150]);
 });
 
+test('keeps the status letter of frames split on STX', () => {
+  // Cutting one byte short here used to drop the M, so a truck still rocking
+  // on the deck read as settled on indicators that send no line ending.
+  const s = new FrameSplitter();
+  const readings = s.feed(`${STX}  48320LGM${STX}  48320LG ${STX}`);
+  assert.deepEqual(readings.map((r) => r.motion), [true, false]);
+  assert.equal(readings[0].raw, '  48320LGM');
+});
+
 test('fires once per truck, after the weight settles, and re-arms when the deck clears', () => {
   const t = new WeighingTrigger({ minWeight: 5000, clearWeight: 1000, stableSeconds: 2, stableTolerance: 40 });
   const events = [];

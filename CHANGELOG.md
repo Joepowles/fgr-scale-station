@@ -2,6 +2,14 @@
 
 Newest first. The app shows this file on the Changelog tab of its settings.
 
+## 0.1.13
+
+- A truck still rocking on the deck is no longer taken as settled on indicators that send no line endings: the motion flag at the end of each reading was being cut off.
+- With "Save log" off, saved photos are kept for the retention period. Before, every photo was deleted when the app started and every hour after.
+- The live view no longer freezes now and then when it is opened: a viewer could start partway through a frame and the player stalled on it.
+- Weighing photos are taken faster, about 1.6 s from the camera instead of 2.5 s, and never from a half-drawn frame on cameras that start their stream between whole pictures.
+- Camera errors say what the camera said, such as "Invalid username or password", instead of just "SOAP fault".
+
 ## 0.1.12
 
 - The window opens where it was last closed, at the same size, maximised if it was. If that spot is on a screen that is no longer connected, it opens at the default size on the main screen.

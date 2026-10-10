@@ -103,7 +103,9 @@ class History extends EventEmitter {
   }
 
   // Drop what is older than the retention period: entries from the log and
-  // the photos they named. Photos nobody names any more go too.
+  // the photos they named. Photos nobody names any more go too - but with the
+  // log off nothing names any photo, so then they go only once they are past
+  // the retention period themselves.
   prune(now = Date.now()) {
     const cutoff = now - this.retentionDays * 24 * 60 * 60 * 1000;
     const entries = this.read();
@@ -117,7 +119,7 @@ class History extends EventEmitter {
         if (!/\.jpg$/i.test(name) || named.has(name)) continue;
         const full = this.photoPath(name);
         try {
-          if (fs.statSync(full).mtimeMs < cutoff || !named.has(name)) { fs.unlinkSync(full); photosRemoved += 1; }
+          if (this.saveLog || fs.statSync(full).mtimeMs < cutoff) { fs.unlinkSync(full); photosRemoved += 1; }
         } catch {}
       }
     } catch {}

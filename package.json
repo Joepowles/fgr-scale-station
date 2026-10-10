@@ -1,7 +1,7 @@
 {
   "name": "fgr-scale-station",
   "productName": "Falcon Scale Station",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Standalone Windows app for a truck scale: the scale camera full-screen with the live weight and the plate read off each truck, logged locally.",
   "main": "./out/main/index.js",
   "author": "Falcon Green Resources",

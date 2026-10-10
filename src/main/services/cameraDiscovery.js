@@ -55,8 +55,8 @@ const localAddresses = () => {
 
 // What a ProbeMatch says about the camera that sent it.
 const parseProbeMatch = (xml, fromAddress) => {
-  const xaddrs = ((xml.match(/<(?:[A-Za-z0-9_]+:)?XAddrs>([^<]*)</) || [])[1] || '').trim().split(/\s+/).filter(Boolean);
-  const scopes = ((xml.match(/<(?:[A-Za-z0-9_]+:)?Scopes>([^<]*)</) || [])[1] || '');
+  const xaddrs = ((xml.match(/<(?:[A-Za-z0-9_.-]+:)?XAddrs>([^<]*)</) || [])[1] || '').trim().split(/\s+/).filter(Boolean);
+  const scopes = ((xml.match(/<(?:[A-Za-z0-9_.-]+:)?Scopes>([^<]*)</) || [])[1] || '');
   const scope = (key) => decodeURIComponent(((scopes.match(new RegExp(`onvif://www\\.onvif\\.org/${key}/([^\\s]+)`)) || [])[1] || '').replace(/\+/g, ' '));
   // Prefer the address on the interface that answered; cameras list an
   // IPv6 or a stale address first sometimes.
@@ -133,7 +133,7 @@ const describe = async (deviceUrl, { username, password } = {}) => {
   const client = new OnvifEventClient({ deviceUrl, username, password });
   try {
     const xml = await client._request(deviceUrl, `<tds:GetDeviceInformation xmlns:tds="${NS_TDS}"/>`);
-    const field = (name) => unescapeXml(((xml.match(new RegExp(`<(?:[A-Za-z0-9_]+:)?${name}>([^<]*)<`)) || [])[1] || '').trim());
+    const field = (name) => unescapeXml(((xml.match(new RegExp(`<(?:[A-Za-z0-9_.-]+:)?${name}>([^<]*)<`)) || [])[1] || '').trim());
     return { name: field('Model'), hardware: [field('Manufacturer'), field('HardwareId')].filter(Boolean).join(' ') };
   } catch { return { name: '', hardware: '' }; }
 };
@@ -199,7 +199,7 @@ const streamsOf = async ({ deviceUrl, host, port, username, password }) => {
     const uriOf = async (tag) => {
       try {
         const xml = await client._request(mediaUrl, body(tag));
-        return unescapeXml(((xml.match(/<(?:[A-Za-z0-9_]+:)?Uri>([^<]*)</) || [])[1] || '').trim());
+        return unescapeXml(((xml.match(/<(?:[A-Za-z0-9_.-]+:)?Uri>([^<]*)</) || [])[1] || '').trim());
       } catch { return ''; }
     };
     out.push({

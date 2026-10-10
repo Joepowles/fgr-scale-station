@@ -36,6 +36,13 @@ const captureRtspSnapshot = (rtspUrl, user, pass, timeoutMs = 8000) => {
     const args = [
       '-loglevel', 'error',        // suppress verbose ffmpeg output
       '-rtsp_transport', 'tcp',    // TCP is more reliable than UDP for LAN cameras
+      // Keyframes only: a camera that starts its stream between keyframes
+      // would otherwise give a grey smear for a first frame. And a 1 s probe:
+      // ffmpeg's default probe is what waited longest, and keyframes-only made
+      // it wait longer still (5.6 s a snapshot from the yard camera; 1.6 s
+      // with both).
+      '-skip_frame', 'nokey',
+      '-analyzeduration', '1000000',
       '-i', fullUrl,
       '-vframes', '1',             // capture exactly one frame
       '-q:v', '2',                 // high quality JPEG (1=best, 31=worst)

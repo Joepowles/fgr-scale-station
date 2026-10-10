@@ -48,6 +48,18 @@ test('can keep the log without photos', () => {
   assert.equal(fs.readdirSync(path.join(h.folder, 'photos')).length, 0);
 });
 
+test('can keep photos without the log, and they survive a prune', () => {
+  // With no log nothing names the photos, and the prune used to take them
+  // all as orphans at start-up and every hour after.
+  const h = new History({ folder: tmp(), retentionDays: 7, saveLog: false });
+  const e = h.record({ weight: 5, unit: 'lb' }, Buffer.from('truck'));
+  assert.deepEqual(h.read(), []);
+  assert.deepEqual(h.prune(), { dropped: 0, photosRemoved: 0 });
+  assert.ok(fs.existsSync(h.photoPath(e.photo)));
+  // ...until they are past the retention period themselves.
+  assert.equal(h.prune(Date.now() + 8 * 24 * 60 * 60 * 1000).photosRemoved, 1);
+});
+
 test('an update can replace the photo under the same name', () => {
   const h = new History({ folder: tmp(), retentionDays: 7 });
   const e = h.record({ weight: 4740, unit: 'lb' }, Buffer.from('front-axle'));

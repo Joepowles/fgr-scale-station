@@ -34,9 +34,10 @@ const NS = {
 };
 
 // Grab the text of the first element whose local name matches, ignoring any
-// namespace prefix. Regex is enough for the handful of fields we read.
+// namespace prefix - which can have a hyphen in it, as in many cameras'
+// SOAP-ENV. Regex is enough for the handful of fields we read.
 const textOf = (xml, localName) => {
-  const match = xml.match(new RegExp(`<(?:[A-Za-z0-9_]+:)?${localName}(?:\\s[^>]*)?>([^<]*)<`, 'i'));
+  const match = xml.match(new RegExp(`<(?:[A-Za-z0-9_.-]+:)?${localName}(?:\\s[^>]*)?>([^<]*)<`, 'i'));
   return match ? match[1].trim() : '';
 };
 
@@ -121,7 +122,7 @@ class OnvifEventClient {
   // Learn the camera's clock and where its Events service lives.
   async connect() {
     const timeXml = await this._request(this.deviceUrl, `<tds:GetSystemDateAndTime xmlns:tds="${NS.tds}"/>`);
-    const utc = timeXml.match(/<(?:[A-Za-z0-9_]+:)?UTCDateTime>(.*?)<\/(?:[A-Za-z0-9_]+:)?UTCDateTime>/s);
+    const utc = timeXml.match(/<(?:[A-Za-z0-9_.-]+:)?UTCDateTime>(.*?)<\/(?:[A-Za-z0-9_.-]+:)?UTCDateTime>/s);
     if (utc) {
       const n = (name) => Number(textOf(utc[1], name));
       const cameraNow = Date.UTC(n('Year'), n('Month') - 1, n('Day'), n('Hour'), n('Minute'), n('Second'));
@@ -132,7 +133,7 @@ class OnvifEventClient {
       this.deviceUrl,
       `<tds:GetCapabilities xmlns:tds="${NS.tds}"><tds:Category>Events</tds:Category></tds:GetCapabilities>`
     );
-    const events = capsXml.match(/<(?:[A-Za-z0-9_]+:)?Events>.*?<(?:[A-Za-z0-9_]+:)?XAddr>([^<]+)</s);
+    const events = capsXml.match(/<(?:[A-Za-z0-9_.-]+:)?Events>.*?<(?:[A-Za-z0-9_.-]+:)?XAddr>([^<]+)</s);
     this.eventsUrl = events ? events[1].trim() : this.deviceUrl.replace(/\/onvif\/.*$/, '/onvif/Events');
     // Some firmware advertises a hostname we cannot resolve; keep the host we
     // were given and only take the path from the camera.
@@ -151,7 +152,7 @@ class OnvifEventClient {
   async getTopics() {
     if (!this.eventsUrl) await this.connect();
     const xml = await this._request(this.eventsUrl, `<tev:GetEventProperties xmlns:tev="${NS.tev}"/>`);
-    const topicSet = (xml.match(/<(?:[A-Za-z0-9_]+:)?TopicSet.*?<\/(?:[A-Za-z0-9_]+:)?TopicSet>/s) || [''])[0];
+    const topicSet = (xml.match(/<(?:[A-Za-z0-9_.-]+:)?TopicSet.*?<\/(?:[A-Za-z0-9_.-]+:)?TopicSet>/s) || [''])[0];
     const topics = [];
     const stack = [];
     const tagRe = /<\/?([A-Za-z0-9:_]+)([^>]*)>/g;
@@ -173,7 +174,7 @@ class OnvifEventClient {
       this.eventsUrl,
       `<tev:CreatePullPointSubscription xmlns:tev="${NS.tev}"><tev:InitialTerminationTime>${initialTermination}</tev:InitialTerminationTime></tev:CreatePullPointSubscription>`
     );
-    const address = xml.match(/<(?:[A-Za-z0-9_]+:)?Address>([^<]+)</);
+    const address = xml.match(/<(?:[A-Za-z0-9_.-]+:)?Address>([^<]+)</);
     if (!address) throw new Error('Camera did not return a subscription address');
     const url = new URL(address[1].trim());
     const given = new URL(this.deviceUrl);
@@ -198,7 +199,7 @@ class OnvifEventClient {
       'http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest'
     );
     const messages = [];
-    const msgRe = /<(?:[A-Za-z0-9_]+:)?NotificationMessage>(.*?)<\/(?:[A-Za-z0-9_]+:)?NotificationMessage>/gs;
+    const msgRe = /<(?:[A-Za-z0-9_.-]+:)?NotificationMessage>(.*?)<\/(?:[A-Za-z0-9_.-]+:)?NotificationMessage>/gs;
     let match;
     while ((match = msgRe.exec(xml))) {
       const body = match[1];
@@ -206,7 +207,7 @@ class OnvifEventClient {
       const operation = (body.match(/PropertyOperation="([^"]+)"/) || [])[1] || '';
       const time = (body.match(/UtcTime="([^"]+)"/) || [])[1] || '';
       const items = {};
-      const itemRe = /<(?:[A-Za-z0-9_]+:)?SimpleItem\s+([^>]*)\/?>/g;
+      const itemRe = /<(?:[A-Za-z0-9_.-]+:)?SimpleItem\s+([^>]*)\/?>/g;
       let item;
       while ((item = itemRe.exec(body))) {
         const name = (item[1].match(/Name="([^"]*)"/) || [])[1];
@@ -238,7 +239,7 @@ class OnvifEventClient {
     if (this._media) return this._media;
     if (!this.eventsUrl) await this.connect();
     const caps = await this._request(this.deviceUrl, `<tds:GetCapabilities xmlns:tds="${NS.tds}"><tds:Category>Media</tds:Category></tds:GetCapabilities>`);
-    const found = caps.match(/<(?:[A-Za-z0-9_]+:)?Media>.*?<(?:[A-Za-z0-9_]+:)?XAddr>([^<]+)</s);
+    const found = caps.match(/<(?:[A-Za-z0-9_.-]+:)?Media>.*?<(?:[A-Za-z0-9_.-]+:)?XAddr>([^<]+)</s);
     let url = found ? found[1].trim() : this.deviceUrl.replace(/\/onvif\/.*$/, '/onvif/Media');
     try {
       const advertised = new URL(url);
@@ -255,18 +256,18 @@ class OnvifEventClient {
   async _profiles() {
     if (this._profileList) return this._profileList;
     const xml = await this._request(await this._mediaUrl(), `<trt:GetProfiles xmlns:trt="${NS.trt}"/>`);
-    const re = /<(?:[A-Za-z0-9_]+:)?Profiles\b([^>]*)>(.*?)<\/(?:[A-Za-z0-9_]+:)?Profiles>/gs;
+    const re = /<(?:[A-Za-z0-9_.-]+:)?Profiles\b([^>]*)>(.*?)<\/(?:[A-Za-z0-9_.-]+:)?Profiles>/gs;
     const out = [];
     let m;
     while ((m = re.exec(xml))) {
       const token = (m[1].match(/token="([^"]+)"/) || [])[1] || '';
-      const name = (m[2].match(/<(?:[A-Za-z0-9_]+:)?Name>([^<]*)</) || [])[1] || '';
-      const vsc = m[2].match(/<(?:[A-Za-z0-9_]+:)?VideoSourceConfiguration\b([^>]*)>/);
+      const name = (m[2].match(/<(?:[A-Za-z0-9_.-]+:)?Name>([^<]*)</) || [])[1] || '';
+      const vsc = m[2].match(/<(?:[A-Za-z0-9_.-]+:)?VideoSourceConfiguration\b([^>]*)>/);
       const vscToken = vsc ? ((vsc[1].match(/token="([^"]+)"/) || [])[1] || '') : '';
       // The encoder's resolution, so a stream list can say which is the big one.
-      const enc = m[2].match(/<(?:[A-Za-z0-9_]+:)?VideoEncoderConfiguration\b[^>]*>(.*?)<\/(?:[A-Za-z0-9_]+:)?VideoEncoderConfiguration>/s);
-      const width = enc ? Number((enc[1].match(/<(?:[A-Za-z0-9_]+:)?Width>(\d+)</) || [])[1]) || null : null;
-      const height = enc ? Number((enc[1].match(/<(?:[A-Za-z0-9_]+:)?Height>(\d+)</) || [])[1]) || null : null;
+      const enc = m[2].match(/<(?:[A-Za-z0-9_.-]+:)?VideoEncoderConfiguration\b[^>]*>(.*?)<\/(?:[A-Za-z0-9_.-]+:)?VideoEncoderConfiguration>/s);
+      const width = enc ? Number((enc[1].match(/<(?:[A-Za-z0-9_.-]+:)?Width>(\d+)</) || [])[1]) || null : null;
+      const height = enc ? Number((enc[1].match(/<(?:[A-Za-z0-9_.-]+:)?Height>(\d+)</) || [])[1]) || null : null;
       if (token) out.push({ token, name, vscToken, width, height });
     }
     this._profileList = out;
@@ -278,7 +279,7 @@ class OnvifEventClient {
       `<trt:GetStreamUri xmlns:trt="${NS.trt}" xmlns:tt="${NS.tt}">`
       + '<trt:StreamSetup><tt:Stream>RTP-Unicast</tt:Stream><tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trt:StreamSetup>'
       + `<trt:ProfileToken>${escapeXml(profileToken)}</trt:ProfileToken></trt:GetStreamUri>`);
-    const uri = (xml.match(/<(?:[A-Za-z0-9_]+:)?Uri>([^<]*)</) || [])[1] || '';
+    const uri = (xml.match(/<(?:[A-Za-z0-9_.-]+:)?Uri>([^<]*)</) || [])[1] || '';
     return Number((uri.match(/channel=(\d+)/i) || [])[1]) || null;
   }
 
@@ -317,4 +318,4 @@ class OnvifEventClient {
   }
 }
 
-module.exports = { OnvifEventClient };
+module.exports = { OnvifEventClient, textOf, parseFault };

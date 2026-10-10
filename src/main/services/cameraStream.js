@@ -48,7 +48,10 @@ const IDLE_INIT_TIMEOUT_MS = 15000;
  * the initialisation segment (ftyp + moov) first, then fragments starting at a
  * moof boundary. So the stream is parsed into top-level boxes: everything up
  * to the first moof is kept as the init segment and replayed to each new
- * viewer, and whole boxes after it are broadcast live.
+ * viewer, and whole boxes after it are broadcast live. A moof is held back
+ * until its mdat has arrived and the two go out as one write: a viewer who
+ * joined between them would otherwise get media data with no header for it,
+ * and the player stalls.
  */
 const consumeBoxes = (state, chunk) => {
   state.buffer = state.buffer.length ? Buffer.concat([state.buffer, chunk]) : chunk;
@@ -83,7 +86,14 @@ const consumeBoxes = (state, chunk) => {
       continue;
     }
 
-    broadcast(state, box);
+    if (type === 'moof') {
+      state.heldMoof = box;
+    } else if (type === 'mdat' && state.heldMoof) {
+      broadcast(state, Buffer.concat([state.heldMoof, box]));
+      state.heldMoof = null;
+    } else {
+      broadcast(state, box);
+    }
   }
 };
 
@@ -185,6 +195,7 @@ const restart = (state) => {
   state.initParts = [];
   state.initSegment = null;
   state.initReady = false;
+  state.heldMoof = null;
   if (state.restartTimer) clearTimeout(state.restartTimer);
   state.restartTimer = setTimeout(() => { state.restartTimer = null; startFfmpeg(state); }, RESTART_DELAY_MS);
   state.restartTimer.unref?.();
@@ -224,7 +235,7 @@ const streamRtspToFmp4 = (rtspUrl, res) => {
     state = {
       url: rtspUrl, active: true, ff: null,
       subscribers: new Set(), pending: new Set(),
-      buffer: Buffer.alloc(0), initParts: [], initSegment: null, initReady: false,
+      buffer: Buffer.alloc(0), initParts: [], initSegment: null, initReady: false, heldMoof: null,
       restartCount: 0, restartTimer: null, lingerTimer: null
     };
     streams.set(rtspUrl, state);
@@ -268,4 +279,4 @@ const activeCameraStreams = () =>
     restarts: s.restartCount
   }));
 
-module.exports = { streamRtspToFmp4, stopAllCameraStreams, activeCameraStreams };
+module.exports = { streamRtspToFmp4, stopAllCameraStreams, activeCameraStreams, consumeBoxes };
