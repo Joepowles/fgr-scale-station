@@ -33,7 +33,7 @@ window.station = {
     status: call('scale_status'), test: call('scale_test'), discover: call('scale_discover'),
     onStatus: on('scale:status'), onWeighed: on('scale:weighed'), onPlate: on('scale:plate'), onDiscoverProgress: on('scale:discover-progress')
   },
-  camera: { discover: notYet('Camera discovery'), streams: notYet('Camera streams'), snapshotTest: notYet('Camera snapshots'), onDiscoverProgress: never() },
+  camera: { discover: notYet('Camera discovery'), streams: notYet('Camera streams'), snapshotTest: call('camera_snapshot_test'), onDiscoverProgress: never() },
   plates: { readNow: notYet('The plate reader'), status: answer({ installed: false, ready: false, lastError: 'not ported to Rust yet' }) },
   history: {
     list: call('history_list'), stats: call('history_stats'), prune: call('history_prune'),

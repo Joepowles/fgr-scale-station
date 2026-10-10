@@ -15,12 +15,13 @@ the same React app, copied unchanged; `src/station.js` rebuilds the
 | `settings.js`                  | `settings.rs`              | done |
 | `index.js` (scale, log, IPC)   | `lib.rs`                   | scale parts only |
 | `services/nportDiscovery.js`   | `scale/discovery.rs`       | done, tests ported and extended |
-| camera stream / snapshots      | —                          | not yet (ffmpeg sidecar) |
-| ONVIF discovery                | —                          | not yet |
+| `services/cameraStream.js`     | `camera/stream.rs`         | done; ffmpeg as a Tauri sidecar |
+| `services/rtspSnapshot.js`     | `camera/snapshot.rs`, `camera/rtsp.rs` | done |
+| ONVIF discovery                | —                          | not yet (stream URLs can be typed in) |
 | vehicle detector               | —                          | dropped: the scale is the trigger |
 | plate reader                   | —                          | not yet |
 | `services/history.js`          | `history.rs`               | done, tests ported and extended |
-| local HTTP server (photos)     | `server.rs`                | photos; camera stream next |
+| local HTTP server              | `server.rs`                | done: /stream, /snapshot, /photo |
 | `services/weighingPipeline.js` | `pipeline.rs`              | logs weighings; photo and plate next |
 | bug report, updater            | —                          | not yet |
 
@@ -54,6 +55,27 @@ e.g. `~/.local/share/com.falcongreenresources.scalestation.rs` on Linux.
 then in Settings → Scale, address `127.0.0.1`, port `9950`. It plays a truck
 rolling on, settling at 48,320 lb, and leaving, on a loop.
 
+### A camera to watch without a yard
+
+    python3 tools/fake-camera.py
+
+serves HEVC over RTSP, as the yard's cameras do, with the login
+admin / secret: `rtsp://127.0.0.1:8554/sub` (960x480) for the live view and
+`/main` (1920x1080) for photos. It needs GStreamer's RTSP server (Debian:
+`gir1.2-gst-rtsp-server-1.0 python3-gi gstreamer1.0-plugins-{good,bad,ugly}`).
+The tests that use it are ignored by default:
+
+    cargo test fake_camera -- --ignored --nocapture
+
+### ffmpeg
+
+The app runs ffmpeg as a Tauri sidecar (`bundle.externalBin`), which has to
+be in `src-tauri/binaries/` before a build:
+
+    npm run fetch:ffmpeg     # Linux: copies the system ffmpeg in
+
+On Linux the window's <video> also needs `gstreamer1.0-libav` for H.264.
+
 ### On a headless Linux box
 
 GTK blocks for 25 s per D-Bus call when there is no session bus, so run the
@@ -67,4 +89,5 @@ Build on Windows (Rust via rustup, plus the WebView2 runtime that Windows 11
 already has):
 
     npm install
+    node scripts/fetch-ffmpeg.cjs x86_64-pc-windows-msvc   # BtbN's static build
     npm run tauri build        # NSIS installer under src-tauri/target/release/bundle

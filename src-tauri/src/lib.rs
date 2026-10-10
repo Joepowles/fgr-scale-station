@@ -1,11 +1,12 @@
 //! Falcon Scale Station - the main process, in Rust.
 //!
-//! One window, one camera, one scale. So far the scale and the history are
-//! here: the reader raises a weighing, the pipeline logs it, the window shows
-//! it. The camera, the plate reader and the updater are still the Electron
-//! app's; the window's calls for those answer "not ported yet" (see
-//! src/station.js).
+//! One window, one camera, one scale. So far the scale, the camera picture
+//! and the history are here: the reader raises a weighing, the pipeline logs
+//! it, the window shows it over the live picture. ONVIF discovery, the plate
+//! reader and the updater are still the Electron app's; the window's calls
+//! for those answer "not ported yet" (see src/station.js).
 
+mod camera;
 mod history;
 mod pipeline;
 mod scale;
@@ -44,6 +45,7 @@ pub(crate) struct AppState {
     /// None only when the history folder cannot be made.
     pub(crate) history: Mutex<Option<History>>,
     pipeline: UnboundedSender<pipeline::Event>,
+    pub(crate) streams: camera::stream::Streams,
     log: Mutex<VecDeque<String>>,
 }
 
@@ -172,6 +174,8 @@ fn prune_history_hourly(app: AppHandle) {
 fn apply_settings(app: &AppHandle) {
     start_history(app);
     start_scale(app);
+    // The stream URLs or login may have changed; viewers reconnect to the new ones.
+    app.state::<AppState>().streams.stop_all();
     let window = app.state::<AppState>().settings.lock().unwrap().get()["window"].clone();
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.set_always_on_top(window["alwaysOnTop"].as_bool().unwrap_or(false));
@@ -189,7 +193,7 @@ fn app_info(app: AppHandle, state: State<AppState>) -> Value {
     json!({
         "version": app.package_info().version.to_string(),
         "serverPort": state.server_port,
-        "ffmpeg": false,
+        "ffmpeg": camera::ffmpeg::available(),
         "plateReader": { "installed": false, "ready": false, "lastError": "not ported to Rust yet" },
         "vehicleModel": false,
         "userData": state.data_dir,
@@ -239,6 +243,28 @@ async fn scale_discover(app: AppHandle) -> Vec<Found> {
     .await;
     log(&app, format!("device server search: {} found", found.len()));
     found
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+struct SnapshotArgs {
+    url: String,
+    username: String,
+    password: String,
+}
+
+/// The Camera tab's "Test live view": one frame, as typed, shown back.
+#[tauri::command]
+async fn camera_snapshot_test(args: SnapshotArgs) -> Result<Value, String> {
+    use base64::Engine;
+    let jpeg = camera::snapshot::capture(&args.url, &args.username, &args.password, std::time::Duration::from_secs(12)).await?;
+    let (width, height) = camera::snapshot::jpeg_size(&jpeg).unwrap_or((0, 0));
+    Ok(json!({
+        "width": width,
+        "height": height,
+        "bytes": jpeg.len(),
+        "image": format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(&jpeg)),
+    }))
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -293,7 +319,10 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
             let handle = app.handle().clone();
+            let log_handle = handle.clone();
+            let streams = camera::stream::Streams::new(std::sync::Arc::new(move |line| log(&log_handle, line)));
             app.manage(AppState {
+                streams,
                 settings: Mutex::new(SettingsStore::load(&data_dir)),
                 data_dir,
                 server_port: server::start(handle.clone())?,
@@ -316,6 +345,7 @@ pub fn run() {
             scale_status,
             scale_test,
             scale_discover,
+            camera_snapshot_test,
             history_list,
             history_stats,
             history_prune,
@@ -323,6 +353,11 @@ pub fn run() {
             history_choose_folder,
             log_recent
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running the station");
+        .build(tauri::generate_context!())
+        .expect("error while building the station")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                app.state::<AppState>().streams.stop_all();
+            }
+        });
 }

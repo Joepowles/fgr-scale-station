@@ -998,8 +998,11 @@ name = "falcon-scale-station"
 version = "0.1.12"
 dependencies = [
  "axum",
+ "base64 0.23.1",
+ "bytes",
  "chrono",
  "fastrand",
+ "futures-util",
  "if-addrs",
  "regex",
  "serde",
@@ -3926,6 +3929,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2 0.6.5",
  "tokio-macros",
  "windows-sys 0.61.2",
