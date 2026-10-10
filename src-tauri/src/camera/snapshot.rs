@@ -18,6 +18,9 @@ pub async fn capture(url: &str, user: &str, pass: &str, wait: Duration) -> Resul
         // decoded can be a grey smear with nothing to build on. This waits for
         // the next whole picture instead, at most one keyframe interval.
         "-skip_frame", "nokey",
+        // ffmpeg's default probe, which keyframes-only stretched, was most of
+        // the wait: 5.6 s a snapshot from the yard camera, 1.6 s with this.
+        "-analyzeduration", "1000000",
         "-i", &full,
         "-frames:v", "1",
         "-q:v", "2", // high quality JPEG (1 = best, 31 = worst)
