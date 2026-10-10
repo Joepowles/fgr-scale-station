@@ -1,6 +1,8 @@
-//! The scale camera: its live picture for the window, and single frames for
-//! the history, both through ffmpeg.
+//! The scale camera: finding it on the LAN (ONVIF), its live picture for the
+//! window, and single frames for the history, both through ffmpeg.
+pub mod discovery;
 pub mod ffmpeg;
+pub mod onvif;
 pub mod rtsp;
 pub mod snapshot;
 pub mod stream;

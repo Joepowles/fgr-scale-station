@@ -17,7 +17,7 @@ the same React app, copied unchanged; `src/station.js` rebuilds the
 | `services/nportDiscovery.js`   | `scale/discovery.rs`       | done, tests ported and extended |
 | `services/cameraStream.js`     | `camera/stream.rs`         | done; ffmpeg as a Tauri sidecar |
 | `services/rtspSnapshot.js`     | `camera/snapshot.rs`, `camera/rtsp.rs` | done |
-| ONVIF discovery                | —                          | not yet (stream URLs can be typed in) |
+| `services/cameraDiscovery.js`  | `camera/discovery.rs`, `camera/onvif.rs` | done |
 | vehicle detector               | —                          | dropped: the scale is the trigger |
 | `services/history.js`          | `history.rs`               | done, tests ported and extended |
 | local HTTP server              | `server.rs`                | done: /stream, /snapshot, /photo |
@@ -33,6 +33,9 @@ Deliberate differences from the Electron app:
 - No vehicle detector: the scale says when a truck is there, and fast-alpr
   finds the plate in the whole full-resolution frame rather than in a crop
   around a detected vehicle.
+- ONVIF replies are read with hyphens and dots allowed in namespace
+  prefixes, so a gSOAP camera's `SOAP-ENV:` fault reason ("Sender not
+  authorized") is shown rather than a bare "SOAP fault".
 - Snapshots decode keyframes only (`-skip_frame nokey`), so a photo taken
   by joining the stream between keyframes is never a grey smear. It can
   wait up to one keyframe interval longer for the picture.
@@ -88,6 +91,16 @@ and `python3 tools/fake-camera.py --image photo-with-a-plate.jpg` gives it
 something to read. The test that drives the real worker:
 
     PLATE_SAMPLE=photo-with-a-plate.jpg cargo test plate_reader -- --ignored --nocapture
+
+### A camera to find without a yard
+
+    python3 tools/fake-onvif.py --port 8899 [--no-discovery]
+
+answers WS-Discovery and the ONVIF calls the Camera tab makes (login
+admin / secret), pointing at `tools/fake-camera.py` for the streams. With
+`--no-discovery` only the LAN sweep can find it. The search on request:
+
+    cargo test finds_cameras_on_this_lan -- --ignored --nocapture
 
 ### ffmpeg
 

@@ -33,7 +33,7 @@ window.station = {
     status: call('scale_status'), test: call('scale_test'), discover: call('scale_discover'),
     onStatus: on('scale:status'), onWeighed: on('scale:weighed'), onPlate: on('scale:plate'), onDiscoverProgress: on('scale:discover-progress')
   },
-  camera: { discover: notYet('Camera discovery'), streams: notYet('Camera streams'), snapshotTest: call('camera_snapshot_test'), onDiscoverProgress: never() },
+  camera: { discover: call('camera_discover'), streams: call('camera_streams'), snapshotTest: call('camera_snapshot_test'), onDiscoverProgress: on('camera:discover-progress') },
   plates: { readNow: call('plates_read_now'), status: call('plates_status') },
   history: {
     list: call('history_list'), stats: call('history_stats'), prune: call('history_prune'),

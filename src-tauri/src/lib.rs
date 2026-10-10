@@ -3,9 +3,9 @@
 //! One window, one camera, one scale. The scale reader raises a weighing;
 //! the pipeline photographs the truck, reads its plate, stamps both on the
 //! picture and writes it to the history; the window shows the live picture
-//! with the weight and plate over it. ONVIF discovery, the bug report and the
-//! updater are still the Electron app's; the window's calls for those answer
-//! "not ported yet" (see src/station.js).
+//! with the weight and plate over it. The bug report and the updater are
+//! still the Electron app's; the window's calls for those answer "not ported
+//! yet" (see src/station.js).
 
 mod camera;
 mod history;
@@ -255,6 +255,35 @@ async fn scale_discover(app: AppHandle) -> Vec<Found> {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct DiscoverArgs {
+    username: String,
+    password: String,
+    #[serde(deserialize_with = "scale::frames::lenient_number")]
+    onvif_port: f64,
+}
+
+/// The Camera tab's "Find cameras": WS-Discovery and a sweep of the LAN,
+/// with the sweep's progress sent as it goes.
+#[tauri::command]
+async fn camera_discover(app: AppHandle, args: Option<DiscoverArgs>) -> camera::discovery::Found {
+    let args = args.unwrap_or_default();
+    let port = if (1.0..=65535.0).contains(&args.onvif_port) { args.onvif_port as u16 } else { 80 };
+    let found = camera::discovery::discover(&args.username, &args.password, port, |done, total, network| {
+        let _ = app.emit("camera:discover-progress", json!({ "done": done, "total": total, "network": network }));
+    })
+    .await;
+    log(&app, format!("camera search: {} found on {}", found.cameras.len(), found.networks.join(", ")));
+    found
+}
+
+/// A camera's streams, asked for with its login.
+#[tauri::command]
+async fn camera_streams(args: camera::discovery::StreamsArgs) -> Result<Vec<camera::discovery::Stream>, String> {
+    camera::discovery::streams_of(args).await
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
 #[serde(default)]
 struct SnapshotArgs {
     url: String,
@@ -367,6 +396,8 @@ pub fn run() {
             scale_status,
             scale_test,
             scale_discover,
+            camera_discover,
+            camera_streams,
             camera_snapshot_test,
             plates_read_now,
             plates_status,
