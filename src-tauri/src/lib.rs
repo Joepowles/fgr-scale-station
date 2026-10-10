@@ -17,6 +17,7 @@ use std::sync::Mutex;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use scale::discovery::{self, Found};
 use scale::reader::{self, ScaleEvent, ScaleReader, ScaleSettings, ScaleStatus, TestArgs, TestResult};
 use settings::SettingsStore;
 
@@ -162,6 +163,18 @@ async fn scale_test(args: TestArgs) -> TestResult {
     reader::test_connection(args).await
 }
 
+/// The Scale tab's "Find the device server": a Moxa search broadcast and a
+/// scan of the LAN, with the scan's progress sent as it goes.
+#[tauri::command]
+async fn scale_discover(app: AppHandle) -> Vec<Found> {
+    let found = discovery::discover(|done, total| {
+        let _ = app.emit("scale:discover-progress", json!({ "done": done, "total": total }));
+    })
+    .await;
+    log(&app, format!("device server search: {} found", found.len()));
+    found
+}
+
 #[tauri::command]
 fn log_recent(state: State<AppState>) -> Vec<String> {
     let lines = state.log.lock().unwrap();
@@ -180,7 +193,17 @@ pub fn run() {
             log(&handle, format!("station {} started (Rust)", app.package_info().version));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![app_info, app_changelog, settings_get, settings_save, settings_defaults, scale_status, scale_test, log_recent])
+        .invoke_handler(tauri::generate_handler![
+            app_info,
+            app_changelog,
+            settings_get,
+            settings_save,
+            settings_defaults,
+            scale_status,
+            scale_test,
+            scale_discover,
+            log_recent
+        ])
         .run(tauri::generate_context!())
         .expect("error while running the station");
 }

@@ -2,6 +2,7 @@
 // truck rolls on, settles, sits, and leaves. Loops.
 const net = require('net');
 const port = Number(process.argv[2] || 9950);
+const host = process.argv[3] || '127.0.0.1';   // 0.0.0.0 to be found by a LAN scan
 const frame = (w, status = ' ') => `\x02${String(Math.round(w)).padStart(7, ' ')}LG${status}\r\n`;
 const script = [];
 for (let i = 0; i < 60; i++) script.push(frame(140));                         // empty, 3 s
@@ -12,4 +13,4 @@ net.createServer((socket) => {
   let i = 0;
   const t = setInterval(() => { socket.write(script[i++ % script.length]); }, 50);
   socket.on('close', () => clearInterval(t)); socket.on('error', () => {});
-}).listen(port, '127.0.0.1', () => console.log(`indicator on ${port}`));
+}).listen(port, host, () => console.log(`indicator on ${host}:${port}`));

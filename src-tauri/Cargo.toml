@@ -23,6 +23,7 @@ tokio = { version = "1", features = ["net", "time", "io-util", "macros", "rt-mul
 socket2 = "0.5"
 regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+if-addrs = "0.15.0"
 
 [profile.release]
 codegen-units = 1

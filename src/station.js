@@ -30,7 +30,7 @@ window.station = {
   changelog: call('app_changelog'),
   settings: { get: call('settings_get'), save: (patch) => invoke('settings_save', { patch }), defaults: call('settings_defaults') },
   scale: {
-    status: call('scale_status'), test: call('scale_test'), discover: notYet('NPort discovery'),
+    status: call('scale_status'), test: call('scale_test'), discover: call('scale_discover'),
     onStatus: on('scale:status'), onWeighed: on('scale:weighed'), onPlate: on('scale:plate'), onDiscoverProgress: on('scale:discover-progress')
   },
   camera: { discover: notYet('Camera discovery'), streams: notYet('Camera streams'), snapshotTest: notYet('Camera snapshots'), onDiscoverProgress: never() },

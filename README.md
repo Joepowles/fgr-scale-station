@@ -14,7 +14,7 @@ the same React app, copied unchanged; `src/station.js` rebuilds the
 | `services/scaleReader.js`      | `scale/reader.rs`          | done, tests ported |
 | `settings.js`                  | `settings.rs`              | done |
 | `index.js` (scale, log, IPC)   | `lib.rs`                   | scale parts only |
-| NPort discovery                | —                          | not yet |
+| `services/nportDiscovery.js`   | `scale/discovery.rs`       | done, tests ported and extended |
 | camera stream / snapshots      | —                          | not yet (ffmpeg sidecar) |
 | ONVIF discovery                | —                          | not yet |
 | vehicle detector               | —                          | not yet (`ort` crate) |
@@ -41,7 +41,7 @@ e.g. `~/.local/share/com.falcongreenresources.scalestation.rs` on Linux.
 
 ### A scale to read without a yard
 
-    node tools/fake-indicator.js 9950
+    node tools/fake-indicator.cjs 9950
 
 then in Settings → Scale, address `127.0.0.1`, port `9950`. It plays a truck
 rolling on, settling at 48,320 lb, and leaving, on a loop.
