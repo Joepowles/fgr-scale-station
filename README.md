@@ -17,17 +17,25 @@ the same React app, copied unchanged; `src/station.js` rebuilds the
 | `services/nportDiscovery.js`   | `scale/discovery.rs`       | done, tests ported and extended |
 | camera stream / snapshots      | —                          | not yet (ffmpeg sidecar) |
 | ONVIF discovery                | —                          | not yet |
-| vehicle detector               | —                          | not yet (`ort` crate) |
+| vehicle detector               | —                          | dropped: the scale is the trigger |
 | plate reader                   | —                          | not yet |
-| history, weighing pipeline     | —                          | not yet |
+| `services/history.js`          | `history.rs`               | done, tests ported and extended |
+| local HTTP server (photos)     | `server.rs`                | photos; camera stream next |
+| `services/weighingPipeline.js` | `pipeline.rs`              | logs weighings; photo and plate next |
 | bug report, updater            | —                          | not yet |
 
 Calls for the parts not yet ported answer "not ported to Rust yet".
 
-One deliberate difference: the Electron `FrameSplitter` drops the last
-character of a frame that ends at an STX with no line ending after it, which
-loses the motion flag on indicators that send no CR/LF. The Rust one keeps it
-(`keeps_the_status_letter_of_frames_split_on_stx`).
+Deliberate differences from the Electron app:
+
+- Its `FrameSplitter` drops the last character of a frame that ends at an
+  STX with no line ending after it, which loses the motion flag on
+  indicators that send no CR/LF. The Rust one keeps it
+  (`keeps_the_status_letter_of_frames_split_on_stx`).
+- Its history prune removes every photo no log line names; with "keep the
+  log" off that is every photo, within the hour. The Rust one removes
+  unnamed photos only while the log is kept, and otherwise by age
+  (`can_keep_photos_without_the_log_and_they_survive_a_prune`).
 
 ## Developing
 

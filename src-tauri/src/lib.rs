@@ -1,11 +1,15 @@
 //! Falcon Scale Station - the main process, in Rust.
 //!
-//! One window, one camera, one scale. So far only the scale is here: the
-//! reader raises a weighing and the window shows it. The camera, the plate
-//! reader, the history and the updater are still the Electron app's; the
-//! window's calls for those answer "not ported yet" (see src/station.js).
+//! One window, one camera, one scale. So far the scale and the history are
+//! here: the reader raises a weighing, the pipeline logs it, the window shows
+//! it. The camera, the plate reader and the updater are still the Electron
+//! app's; the window's calls for those answer "not ported yet" (see
+//! src/station.js).
 
+mod history;
+mod pipeline;
 mod scale;
+mod server;
 mod settings;
 
 use std::collections::VecDeque;
@@ -16,6 +20,11 @@ use std::sync::Mutex;
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
+use tokio::sync::mpsc::UnboundedSender;
+
+use history::{History, HistorySettings, Pruned, Stats};
 
 use scale::discovery::{self, Found};
 use scale::reader::{self, ScaleEvent, ScaleReader, ScaleSettings, ScaleStatus, TestArgs, TestResult};
@@ -27,10 +36,14 @@ const LOG_LINES_KEPT: usize = 500;
 // about 2 MB: the older half is dropped when it grows past that.
 const LOG_FILE_MAX: u64 = 2 * 1024 * 1024;
 
-struct AppState {
+pub(crate) struct AppState {
     data_dir: PathBuf,
-    settings: Mutex<SettingsStore>,
+    server_port: u16,
+    pub(crate) settings: Mutex<SettingsStore>,
     scale: Mutex<Option<ScaleReader>>,
+    /// None only when the history folder cannot be made.
+    pub(crate) history: Mutex<Option<History>>,
+    pipeline: UnboundedSender<pipeline::Event>,
     log: Mutex<VecDeque<String>>,
 }
 
@@ -38,9 +51,19 @@ impl AppState {
     fn log_file(&self) -> PathBuf {
         self.data_dir.join("station.log")
     }
+
+    /// The history folder in use: the chosen one, or the default under app data.
+    fn history_folder(&self) -> PathBuf {
+        let chosen = self.settings.lock().unwrap().get()["history"]["folder"].as_str().unwrap_or("").trim().to_string();
+        if chosen.is_empty() {
+            self.data_dir.join("history")
+        } else {
+            PathBuf::from(chosen)
+        }
+    }
 }
 
-fn log(app: &AppHandle, message: impl AsRef<str>) {
+pub(crate) fn log(app: &AppHandle, message: impl AsRef<str>) {
     let state = app.state::<AppState>();
     let line = format!("{} {}", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ"), message.as_ref());
     println!("{line}");
@@ -90,21 +113,64 @@ fn start_scale(app: &AppHandle) {
         }
         ScaleEvent::Weighed(w) => {
             log(&handle, format!("weighed {} {}", w.weight, w.unit));
-            let _ = handle.emit("scale:weighed", w);
-            // Not ported yet: the weighing pipeline (photo, plate, history).
+            let _ = handle.emit("scale:weighed", &w);
+            let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Weighed(w));
         }
         ScaleEvent::Reweighed(w) => {
             log(&handle, format!("reweighed {} {} (was {})", w.weight, w.unit, w.previous.unwrap_or_default()));
-            let _ = handle.emit("scale:weighed", w);
+            let _ = handle.emit("scale:weighed", &w);
+            let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Reweighed(w));
         }
-        ScaleEvent::Cleared { .. } => log(&handle, "deck clear"),
+        ScaleEvent::Cleared { .. } => {
+            log(&handle, "deck clear");
+            let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Cleared);
+        }
     });
     *slot = Some(ScaleReader::start(&settings, previous.as_ref(), sink));
     drop(slot);
     log(app, format!("reading the scale at {}:{}", settings.host.trim(), settings.port));
 }
 
+// ── History ────────────────────────────────────────────────────────────────
+
+/// Opens the history where the settings say, or points the open one there.
+fn start_history(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let settings: HistorySettings = state.settings.lock().unwrap().section("history");
+    let folder = state.history_folder();
+    let mut slot = state.history.lock().unwrap();
+    let result = match slot.as_mut() {
+        Some(history) => history.configure(folder.clone(), &settings),
+        None => {
+            let handle = app.clone();
+            let on_entry = Box::new(move |entry: &history::Entry| {
+                let _ = handle.emit("history:entry", entry);
+            });
+            History::new(folder.clone(), &settings, on_entry).map(|h| *slot = Some(h))
+        }
+    };
+    drop(slot);
+    if let Err(err) = result {
+        log(app, format!("history folder {} unusable: {err}", folder.display()));
+    }
+}
+
+/// Once now and once an hour, for as long as the app runs.
+fn prune_history_hourly(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut every_hour = tokio::time::interval(history::PRUNE_INTERVAL);
+        loop {
+            every_hour.tick().await;
+            let pruned = app.state::<AppState>().history.lock().unwrap().as_ref().map(|h| h.prune(reader::now_ms()));
+            if let Some(p) = pruned.filter(|p| p.dropped + p.photos_removed > 0) {
+                log(&app, format!("history pruned: {} entries, {} photos", p.dropped, p.photos_removed));
+            }
+        }
+    });
+}
+
 fn apply_settings(app: &AppHandle) {
+    start_history(app);
     start_scale(app);
     let window = app.state::<AppState>().settings.lock().unwrap().get()["window"].clone();
     if let Some(win) = app.get_webview_window("main") {
@@ -122,7 +188,7 @@ fn apply_settings(app: &AppHandle) {
 fn app_info(app: AppHandle, state: State<AppState>) -> Value {
     json!({
         "version": app.package_info().version.to_string(),
-        "serverPort": 0,
+        "serverPort": state.server_port,
         "ffmpeg": false,
         "plateReader": { "installed": false, "ready": false, "lastError": "not ported to Rust yet" },
         "vehicleModel": false,
@@ -175,6 +241,43 @@ async fn scale_discover(app: AppHandle) -> Vec<Found> {
     found
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+struct ListArgs {
+    limit: Option<usize>,
+}
+
+#[tauri::command]
+fn history_list(state: State<AppState>, args: Option<ListArgs>) -> Vec<history::Entry> {
+    let limit = args.unwrap_or_default().limit.unwrap_or(200);
+    state.history.lock().unwrap().as_ref().map(|h| h.list(limit)).unwrap_or_default()
+}
+
+#[tauri::command]
+fn history_stats(state: State<AppState>) -> Option<Stats> {
+    state.history.lock().unwrap().as_ref().map(History::stats)
+}
+
+#[tauri::command]
+fn history_prune(state: State<AppState>) -> Pruned {
+    state.history.lock().unwrap().as_ref().map(|h| h.prune(reader::now_ms())).unwrap_or_default()
+}
+
+#[tauri::command]
+fn history_open_folder(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    app.opener().open_path(state.history_folder().to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+}
+
+/// A folder picker; the chosen path goes back to the History tab, which saves it.
+#[tauri::command]
+async fn history_choose_folder(app: AppHandle) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().set_title("Where to keep the history log and photos").pick_folder(move |folder| {
+        let _ = tx.send(folder);
+    });
+    rx.await.ok().flatten().map(|f| f.to_string())
+}
+
 #[tauri::command]
 fn log_recent(state: State<AppState>) -> Vec<String> {
     let lines = state.log.lock().unwrap();
@@ -184,12 +287,23 @@ fn log_recent(state: State<AppState>) -> Vec<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
-            app.manage(AppState { settings: Mutex::new(SettingsStore::load(&data_dir)), data_dir, scale: Mutex::new(None), log: Mutex::new(VecDeque::new()) });
             let handle = app.handle().clone();
+            app.manage(AppState {
+                settings: Mutex::new(SettingsStore::load(&data_dir)),
+                data_dir,
+                server_port: server::start(handle.clone())?,
+                scale: Mutex::new(None),
+                history: Mutex::new(None),
+                pipeline: pipeline::start(handle.clone()),
+                log: Mutex::new(VecDeque::new()),
+            });
             apply_settings(&handle);
+            prune_history_hourly(handle.clone());
             log(&handle, format!("station {} started (Rust)", app.package_info().version));
             Ok(())
         })
@@ -202,6 +316,11 @@ pub fn run() {
             scale_status,
             scale_test,
             scale_discover,
+            history_list,
+            history_stats,
+            history_prune,
+            history_open_folder,
+            history_choose_folder,
             log_recent
         ])
         .run(tauri::generate_context!())

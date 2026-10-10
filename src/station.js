@@ -36,8 +36,8 @@ window.station = {
   camera: { discover: notYet('Camera discovery'), streams: notYet('Camera streams'), snapshotTest: notYet('Camera snapshots'), onDiscoverProgress: never() },
   plates: { readNow: notYet('The plate reader'), status: answer({ installed: false, ready: false, lastError: 'not ported to Rust yet' }) },
   history: {
-    list: answer([]), stats: answer({ entries: 0, photoBytes: 0, oldest: null, newest: null, folder: '(history is not ported yet)' }), prune: notYet('History'),
-    openFolder: notYet('History'), chooseFolder: notYet('History'), onEntry: never()
+    list: call('history_list'), stats: call('history_stats'), prune: call('history_prune'),
+    openFolder: call('history_open_folder'), chooseFolder: call('history_choose_folder'), onEntry: on('history:entry')
   },
   log: { recent: call('log_recent'), onLine: on('log') },
   support: { send: notYet('Bug reports'), save: notYet('Bug reports'), open: notYet('Bug reports') },
