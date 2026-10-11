@@ -52,7 +52,7 @@ export default function PlatesTab({ draft, patch, info }) {
             </p>
           )}
           {result?.image && <img src={result.image} alt="" className="w-full rounded bg-black" />}
-          {reader && !reader.installed && <p className="text-xs text-amber-400">The plate reader is not in this build ({reader.lastError || 'no Python'}).</p>}
+          {reader && !reader.installed && <p className="text-xs text-amber-400">The plate reader is not in this build ({reader.lastError || 'not built in'}).</p>}
           {reader?.lastError && reader.installed && <p className="text-xs text-amber-400">Plate reader: {reader.lastError}</p>}
         </div>
       </section>

@@ -1,7 +1,7 @@
 {
   "name": "fgr-scale-station",
   "productName": "Falcon Scale Station",
-  "version": "0.1.13",
+  "version": "0.1.14-beta.1",
   "description": "Standalone Windows app for a truck scale: the scale camera full-screen with the live weight and the plate read off each truck, logged locally.",
   "main": "./out/main/index.js",
   "author": "Falcon Green Resources",
@@ -14,7 +14,7 @@
     "test": "node --test tests/",
     "lint": "eslint .",
     "fetch:ffmpeg": "node scripts/fetch-ffmpeg.js",
-    "build:python": "node scripts/build-python.js",
+    "build:plate-reader": "node scripts/build-plate-reader.js",
     "icon": "node scripts/make-icon.js",
     "dist:win": "npm run build && electron-builder --win --publish never",
     "release:win": "npm run build && electron-builder --win --publish always"

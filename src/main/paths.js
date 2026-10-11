@@ -1,7 +1,7 @@
 // Where things live, in development and once installed.
 //
-// Installed, electron-builder puts the models, the plate worker, ffmpeg and
-// the embedded Python under the app's resources directory (see
+// Installed, electron-builder puts the models, the plate reader and ffmpeg
+// under the app's resources directory (see
 // electron-builder.yml extraResources). In development they are the same
 // folders under ./resources. Everything the app writes - settings, the
 // history log and its photos - goes under the user's app data folder, or
@@ -27,14 +27,10 @@ const userDataDir = () => {
 const ensureDir = (dir) => { fs.mkdirSync(dir, { recursive: true }); return dir; };
 
 const modelPath = () => path.join(resourcesDir(), 'models', 'yolov10n.onnx');
-const plateWorkerScript = () => path.join(resourcesDir(), 'python-worker', 'plate_reader_worker.py');
-const pythonDir = () => path.join(resourcesDir(), 'python');
-const pythonExe = () => (process.platform === 'win32'
-  ? path.join(pythonDir(), 'python.exe')
-  : path.join(pythonDir(), 'bin', 'python'));
-// The embedded Python's "home": fast-alpr caches its models under
-// ~/.cache, so the build pre-fills this folder and the worker is pointed at it.
-const pythonHome = () => path.join(pythonDir(), 'home');
+// The plate reader (plate-reader/, built by scripts/build-plate-reader.js)
+// sits beside ffmpeg, and reads its two models from plate-models.
+const plateReaderExe = () => path.join(resourcesDir(), 'bin', process.platform === 'win32' ? 'plate-reader.exe' : 'plate-reader');
+const plateModelsDir = () => path.join(resourcesDir(), 'plate-models');
 const ffmpegExe = () => path.join(resourcesDir(), 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
 
-module.exports = { projectRoot, resourcesDir, userDataDir, ensureDir, modelPath, plateWorkerScript, pythonDir, pythonExe, pythonHome, ffmpegExe };
+module.exports = { projectRoot, resourcesDir, userDataDir, ensureDir, modelPath, plateReaderExe, plateModelsDir, ffmpegExe };

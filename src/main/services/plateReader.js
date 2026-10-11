@@ -3,35 +3,33 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// Licence plate reading, done by a Python helper kept running in the
-// background (backend/scripts/plate_reader_worker.py).
+// Licence plate reading, done by a helper kept running in the background:
+// plate-reader.exe, built from plate-reader/ (Rust). Keeping it running is
+// what makes a read cost a tenth of a second rather than the second the
+// models take to load.
 //
 // The models are the open ones from the fast-alpr project: a small YOLO that
-// finds plates and a character reader for the crop. They run on the CPU in a
-// few hundred milliseconds, which is plenty for a weighbridge. They are in
-// Python rather than wired into onnxruntime-node like the vehicle model because
-// the project ships preprocessing and decoding that would otherwise have to be
-// reproduced exactly; this keeps that in one place that is tested upstream.
+// finds plates and a character reader for the crop. The helper runs them on
+// ONNX Runtime exactly as fast-alpr does, and was checked against it read for
+// read (plate-reader/compare/); it replaced a bundled Python with fast-alpr,
+// which was most of the installer.
 //
-// The helper is optional: a box without it (the dev web tier, DigitalOcean)
-// simply reports plates as unavailable, and nothing else about detection
-// changes. Install it with backend/scripts/setup-plate-reader.sh on the box
-// that runs vehicle detection.
+// The helper is optional: a build without it simply reports plates as
+// unavailable, and nothing else about detection changes.
 const paths = require('../paths');
-const WORKER_SCRIPT = paths.plateWorkerScript();
-const DEFAULT_PYTHON = paths.pythonExe();
 const REQUEST_TIMEOUT_MS = 20000;
-const START_TIMEOUT_MS = 90000;      // first run downloads the models
+const START_TIMEOUT_MS = 30000;
 const RESTART_BACKOFF_MS = 30000;
 // Noise from onnxruntime inside an LXC container: it tries to pin its threads
 // to cores and the container forbids it. Harmless, and it says so eight times
 // per model.
-const IGNORED_STDERR = ['pthread_setaffinity_np', 'Downloading '];
+const IGNORED_STDERR = ['pthread_setaffinity_np'];
 
-const pythonPath = () => process.env.PLATE_READER_PYTHON || DEFAULT_PYTHON;
+// PLATE_READER_EXE points at another build (development).
+const readerPath = () => process.env.PLATE_READER_EXE || paths.plateReaderExe();
 
 const isInstalled = () => {
-  try { fs.accessSync(pythonPath(), fs.constants.X_OK); return true; } catch { return false; }
+  try { fs.accessSync(readerPath(), fs.constants.X_OK); return true; } catch { return false; }
 };
 
 let worker = null;          // { proc, ready, pending: Map, nextId, startedAt }
@@ -55,22 +53,14 @@ const killWorker = () => {
 const startWorker = () => {
   if (readyPromise) return readyPromise;
   if (!isInstalled()) {
-    lastError = `plate reader not installed (no Python at ${pythonPath()}; the app was built without scripts/build-python.js)`;
+    lastError = `plate reader not installed (nothing at ${readerPath()}; the app was built without scripts/build-plate-reader.js)`;
     return Promise.reject(new Error(lastError));
   }
   if (Date.now() - lastFailureAt < RESTART_BACKOFF_MS) {
     return Promise.reject(new Error(lastError || 'plate reader recently failed; waiting before retrying'));
   }
 
-  // The embedded Python's home holds the pre-downloaded models (see
-  // scripts/build-python.js); fast-alpr looks for them under ~/.cache.
-  const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
-  if (fs.existsSync(paths.pythonHome())) {
-    env.USERPROFILE = paths.pythonHome();
-    env.HOME = paths.pythonHome();
-    env.HF_HUB_OFFLINE = '1';
-  }
-  const proc = spawn(pythonPath(), [WORKER_SCRIPT], { stdio: ['pipe', 'pipe', 'pipe'], env, windowsHide: true });
+  const proc = spawn(readerPath(), ['--models', paths.plateModelsDir()], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   const w = { proc, ready: false, pending: new Map(), nextId: 1, startedAt: Date.now() };
   worker = w;
 
@@ -81,7 +71,7 @@ const startWorker = () => {
   readyPromise = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   const readyTimer = setTimeout(() => {
     if (!w.ready) {
-      lastError = 'plate reader did not start within 90s';
+      lastError = `plate reader did not start within ${START_TIMEOUT_MS / 1000}s`;
       lastFailureAt = Date.now();
       rejectReady(new Error(lastError));
       killWorker();
@@ -181,7 +171,7 @@ const warmUp = () => startWorker().catch((err) => {
 
 const status = () => ({
   installed: isInstalled(),
-  python: pythonPath(),
+  reader: readerPath(),
   running: !!(worker && worker.ready),
   lastError
 });

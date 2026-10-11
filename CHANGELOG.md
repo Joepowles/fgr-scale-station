@@ -2,6 +2,10 @@
 
 Newest first. The app shows this file on the Changelog tab of its settings.
 
+## 0.1.14
+
+- The plate reader no longer needs Python. The same plate models now run in a small built-in reader, which reads the same plates, starts in under a second and is a little quicker per read. The installer is about a third smaller.
+
 ## 0.1.13
 
 - Two update channels, chosen on the Changelog tab. Stable, the default, takes releases only. Beta also takes pre-release builds as they are published, for the one PC that tries things first, and goes back to the stable release when switched back. A button opens the releases page for installing a build by hand.

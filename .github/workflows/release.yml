@@ -1,7 +1,7 @@
 name: Release (Windows installer)
 
 # Tag a version (v0.1.0) and this builds the Windows installer with ffmpeg and
-# the embedded Python inside, then publishes it to the GitHub release. The
+# the plate reader inside, then publishes it to the GitHub release. The
 # installed app checks that release feed for updates when it has internet.
 #
 # Two channels on the one feed. A plain tag (v0.2.0) is a stable release
@@ -30,7 +30,9 @@ jobs:
       - run: npm test
       - run: node scripts/make-icon.js
       - run: node scripts/fetch-ffmpeg.js
-      - run: node scripts/build-python.js
+      # The runner image has Rust; ort needs 1.88 or newer.
+      - run: rustup update stable --no-self-update
+      - run: node scripts/build-plate-reader.js
       - run: npm run build
       # electron-builder uploads the installer, the update feed and the
       # blockmap in parallel, and when no release exists yet each upload can
@@ -45,7 +47,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder --win --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }} ${{ contains(github.ref_name, '-') && '-c.publish.channel=beta -c.publish.releaseType=prerelease' || '' }}
       # One release per tag, and only the newest few kept: each installer is
-      # about 330 MB, and the installed app only ever looks at the latest.
+      # a few hundred MB, and the installed app only ever looks at the latest.
       - name: Tidy releases
         if: startsWith(github.ref, 'refs/tags/')
         env:

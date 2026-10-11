@@ -1,9 +1,9 @@
 node_modules/
 out/
 dist/
-# Filled in at build time by scripts/fetch-ffmpeg.js and scripts/build-python.js.
+# Filled in at build time by scripts/fetch-ffmpeg.js and scripts/build-plate-reader.js.
 resources/bin/
-resources/python/
+resources/plate-models/
 # Local scratch and OS noise.
 .DS_Store
 Thumbs.db

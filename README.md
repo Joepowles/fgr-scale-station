@@ -14,8 +14,8 @@ streaming code are the Falcon backend's, copied in.
 - **Camera** - finds cameras on the LAN over ONVIF, lists their streams, shows
   the one you pick full-window, and grabs frames from the full-resolution
   stream for plate reads and history photos.
-- **Plates** - reads plates locally with fast-alpr (bundled Python, bundled
-  models), no cloud.
+- **Plates** - reads plates locally with fast-alpr's open models, run by a
+  small Rust helper (plate-reader/) with the models bundled; no cloud.
 - **Scale** - finds the Moxa NPort on the LAN, reads the indicator's serial
   stream over TCP, shows the live weight, and fires when a weight settles.
 - **History** - a JSON-lines log plus photos in a folder you choose, kept for
@@ -30,13 +30,12 @@ streaming code are the Falcon backend's, copied in.
 ## Building the installer
 
 Done by `.github/workflows/release.yml` on a Windows runner when a `v*` tag is
-pushed: it fetches ffmpeg, builds the embedded Python with fast-alpr and its
-models, packages with electron-builder and publishes the installer to the
+pushed: it fetches ffmpeg, builds the plate reader and fetches its models, packages with electron-builder and publishes the installer to the
 GitHub release. The installed app auto-updates from those releases.
 
 To build by hand on a Windows machine:
 
     node scripts/make-icon.js
     node scripts/fetch-ffmpeg.js
-    node scripts/build-python.js
+    node scripts/build-plate-reader.js     # needs Rust: https://rustup.rs
     npm run dist:win

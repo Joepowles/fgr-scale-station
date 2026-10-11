@@ -1,0 +1,27 @@
+[package]
+name = "plate-reader"
+version = "0.1.0"
+edition = "2021"
+description = "Licence plate reader for Falcon Scale Station: fast-alpr's models on ONNX Runtime, no Python"
+publish = false
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Windows, which is what ships: ONNX Runtime linked in, one self-contained exe.
+[target.'cfg(windows)'.dependencies]
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-native", "api-24"] }
+
+# Elsewhere (development): the prebuilt static runtime needs glibc 2.38 and
+# GCC 13's libstdc++, so the runtime is loaded at start-up instead, from
+# ORT_DYLIB_PATH - for example the libonnxruntime.so in a fast-alpr venv.
+[target.'cfg(not(windows))'.dependencies]
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-24"] }
+
+[profile.release]
+lto = true
+opt-level = 3
+strip = true
+codegen-units = 1
