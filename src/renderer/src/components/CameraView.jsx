@@ -1,12 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { fmtWeight, cornerClass } from '../lib';
 
-// Seconds the picture may trail the newest frame received: past the first it
-// plays fast until back under the last; past the middle one it reconnects.
-const CATCH_UP_LAG_S = 1;
-const MAX_LAG_S = 8;
-const ON_TIME_LAG_S = 0.4;
-
 // The picture, and the chips over it: the plate in its corner, the weight in
 // its own, stacked when they share one. A fresh <video> on every reconnect,
 // because a stalled MediaSource never recovers on its own.
@@ -33,17 +27,6 @@ export default function CameraView({ settings, info, scale, display }) {
       retry.current = setTimeout(() => setTick((t) => t + 1), 5000);
     };
     const onStalled = () => { clearTimeout(retry.current); retry.current = setTimeout(() => setTick((t) => t + 1), 8000); };
-    // The player shows every frame it is handed at normal speed, so each
-    // stall (a busy CPU, a retransmit) adds delay that is never made up and
-    // the picture falls further behind the yard. Play a little fast while
-    // behind; past saving, reconnect, which starts at the newest keyframe.
-    const catchUp = setInterval(() => {
-      if (!v.buffered.length || v.paused) return;
-      const lag = v.buffered.end(v.buffered.length - 1) - v.currentTime;
-      if (lag > MAX_LAG_S) setTick((t) => t + 1);
-      else if (lag > CATCH_UP_LAG_S) v.playbackRate = 1.5;
-      else if (lag < ON_TIME_LAG_S) v.playbackRate = 1;
-    }, 500);
     v.addEventListener('playing', onPlaying);
     v.addEventListener('error', onError);
     v.addEventListener('stalled', onStalled);
@@ -54,11 +37,23 @@ export default function CameraView({ settings, info, scale, display }) {
       v.removeEventListener('stalled', onStalled);
       v.removeEventListener('ended', onError);
       clearTimeout(retry.current);
-      clearInterval(catchUp);
     };
   }, [src, info.ffmpeg]);
 
-  // Belt and braces behind the catch-up above: reconnect every half hour.
+  // What the player is showing, into the station log once a minute, so a bug
+  // report says whether a bad picture is the stream or the player.
+  useEffect(() => {
+    const t = setInterval(() => {
+      const v = videoRef.current;
+      if (!v || !v.buffered.length) return;
+      const q = v.getVideoPlaybackQuality?.() || {};
+      const behind = v.buffered.end(v.buffered.length - 1) - v.currentTime;
+      window.station.log.write(`[view] ${v.videoWidth}x${v.videoHeight}, ${behind.toFixed(1)}s buffered ahead, ${q.droppedVideoFrames ?? '?'} of ${q.totalVideoFrames ?? '?'} frames dropped, ${v.paused ? 'paused' : 'playing'}`);
+    }, 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // A long session drifts; reconnect every half hour like the site's cards do.
   useEffect(() => {
     const t = setInterval(() => setTick((x) => x + 1), 30 * 60 * 1000);
     return () => clearInterval(t);

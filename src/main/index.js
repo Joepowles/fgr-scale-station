@@ -239,6 +239,8 @@ const registerIpc = () => {
     return '';
   });
   ipcMain.handle('update:status', () => lastUpdateStatus);
+  // The window's own reports, such as what the live view is showing.
+  ipcMain.handle('log:write', (_e, text) => { log(String(text ?? '').slice(0, 500)); return true; });
   ipcMain.handle('app:copy', (_e, text) => { clipboard.writeText(String(text ?? '')); return true; });
   ipcMain.handle('app:open-releases', () => shell.openExternal('https://github.com/Joepowles/fgr-scale-station/releases'));
   ipcMain.handle('window:toggle-fullscreen', () => { win.setFullScreen(!win.isFullScreen()); return win.isFullScreen(); });

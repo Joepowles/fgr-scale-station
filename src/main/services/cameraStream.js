@@ -194,6 +194,14 @@ const startFfmpeg = (state) => {
     // restarting for it (0.1.14-beta.4) left the picture gray, because a
     // fresh connection decodes nothing whole until the camera's next
     // keyframe, and the restarts came sooner than that (issue #6).
+    // What the camera sends and what goes to the window, once per connection,
+    // and the encoder's progress once a minute: enough to tell a bad picture
+    // from the camera from one made here.
+    for (const line of text.split(/\r?\n|\r/)) {
+      if (/Stream #\d+:\d+.*Video:/.test(line)) console.log(`[camera-stream] ${line.trim()}`);
+    }
+    const progress = /frame=.*speed=\s*\S+/.exec(text);
+    if (progress) warnAtMostEvery(state, 'progress', progress[0].replace(/\s+/g, ' '));
     const behind = trackLag(state, text, Date.now());
     if (behind > MAX_ENCODER_LAG_S) warnAtMostEvery(state, 'lag', `${behind.toFixed(1)}s behind the camera`);
     // ffmpeg quotes the input URL back on failure, credentials included.
@@ -233,6 +241,7 @@ const restart = (state) => {
   state.initReady = false;
   state.heldMoof = null;
   state.lagBaseline = null;
+  state.warned = {};
   if (state.restartTimer) clearTimeout(state.restartTimer);
   state.restartTimer = setTimeout(() => { state.restartTimer = null; startFfmpeg(state); }, RESTART_DELAY_MS);
   state.restartTimer.unref?.();
