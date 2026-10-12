@@ -41,6 +41,7 @@ const LINGER_MS = 5000;
 const IDLE_INIT_TIMEOUT_MS = 15000;
 const MAX_ENCODER_LAG_S = 5;
 const WARN_EVERY_MS = 60 * 1000;
+const FULL_LINES_PER_CONNECTION = 40;
 
 // ffmpeg can repeat a complaint many times a second; the log gets it once a
 // minute, with how many were held back.
@@ -189,26 +190,25 @@ const startFfmpeg = (state) => {
 
   ff.stderr.on('data', (d) => {
     const text = String(d);
-    // ffmpeg falling behind the camera, from a busy CPU or a camera clock
-    // that runs slow, cannot be fixed in the player. It is only reported:
-    // restarting for it (0.1.14-beta.4) left the picture gray, because a
-    // fresh connection decodes nothing whole until the camera's next
-    // keyframe, and the restarts came sooner than that (issue #6).
-    // What the camera sends and what goes to the window, once per connection,
-    // and the encoder's progress once a minute: enough to tell a bad picture
-    // from the camera from one made here.
-    for (const line of text.split(/\r?\n|\r/)) {
-      if (/Stream #\d+:\d+.*Video:/.test(line)) console.log(`[camera-stream] ${line.trim()}`);
+    // Everything ffmpeg says about the connection goes in the log: the
+    // first lines of each connection in full (what the camera sends, any
+    // trouble starting), then at most one line a minute. The picture
+    // sometimes comes up gray and blocky (issues #6, #7), and complaints such
+    // as "RTP: missed packets" were being left out. ffmpeg quotes the input
+    // URL back on failure, so credentials are taken out first.
+    for (const raw of text.split(/\r?\n|\r/)) {
+      const line = raw.trim().replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@');
+      if (!line || /^frame=/.test(line)) continue;
+      state.linesLogged = (state.linesLogged || 0) + 1;
+      if (state.linesLogged <= FULL_LINES_PER_CONNECTION) console.log(`[camera-stream] ${line}`);
+      else warnAtMostEvery(state, 'ffmpeg', line);
     }
     const progress = /frame=.*speed=\s*\S+/.exec(text);
     if (progress) warnAtMostEvery(state, 'progress', progress[0].replace(/\s+/g, ' '));
+    // Falling behind the camera, from a busy CPU or a camera clock that runs
+    // slow, is only reported: beta.4 restarted ffmpeg for it.
     const behind = trackLag(state, text, Date.now());
     if (behind > MAX_ENCODER_LAG_S) warnAtMostEvery(state, 'lag', `${behind.toFixed(1)}s behind the camera`);
-    // ffmpeg quotes the input URL back on failure, credentials included.
-    // "Could not find ref" is the decoder missing a frame: the gray blocks.
-    if (/error|failed|unauthor|could not find ref/i.test(text)) {
-      warnAtMostEvery(state, 'ffmpeg', text.replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@').trim().split('\n')[0]);
-    }
   });
 
   ff.on('close', (code) => {
@@ -242,6 +242,7 @@ const restart = (state) => {
   state.heldMoof = null;
   state.lagBaseline = null;
   state.warned = {};
+  state.linesLogged = 0;
   if (state.restartTimer) clearTimeout(state.restartTimer);
   state.restartTimer = setTimeout(() => { state.restartTimer = null; startFfmpeg(state); }, RESTART_DELAY_MS);
   state.restartTimer.unref?.();
@@ -314,6 +315,16 @@ const streamRtspToFmp4 = (rtspUrl, res) => {
   res.on('error', detach);
 };
 
+// The Reconnect button: a fresh connection to the camera for every stream,
+// for a picture that came up gray. Viewers are cut off and come back.
+const reconnectCameraStreams = () => {
+  for (const state of streams.values()) {
+    if (!state.active) continue;
+    console.log('[camera-stream] reconnecting, asked from the window');
+    restart(state);
+  }
+};
+
 const stopAllCameraStreams = () => {
   for (const state of [...streams.values()]) stop(state);
 };
@@ -325,4 +336,4 @@ const activeCameraStreams = () =>
     restarts: s.restartCount
   }));
 
-module.exports = { streamRtspToFmp4, stopAllCameraStreams, activeCameraStreams, consumeBoxes, trackLag };
+module.exports = { streamRtspToFmp4, stopAllCameraStreams, reconnectCameraStreams, activeCameraStreams, consumeBoxes, trackLag };

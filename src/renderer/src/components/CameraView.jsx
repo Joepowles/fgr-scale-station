@@ -98,6 +98,9 @@ export default function CameraView({ settings, info, scale, display }) {
         )}
         {settings.camera.showClock && <Clock />}
       </div>
+      {/* A picture that comes up gray and blocky can be cured by connecting
+          to the camera afresh; this does that without restarting the app. */}
+      <button type="button" onClick={async () => { await window.station.camera.reconnect(); setTick((t) => t + 1); }} className="absolute top-3 right-3 px-2 py-0.5 text-[11px] rounded border opacity-40 hover:opacity-100 bg-black/60 text-gray-200 border-gray-500" title="Connect to the camera again, for a picture that is gray or frozen">Reconnect</button>
       {settings.camera.hdStreamUrl && settings.camera.hdStreamUrl !== settings.camera.streamUrl && (
         <button type="button" onClick={() => { setHd((v) => !v); setTick((t) => t + 1); }} className={`absolute bottom-3 left-1/2 -translate-x-1/2 px-2 py-0.5 text-[11px] rounded border opacity-40 hover:opacity-100 ${hd ? 'bg-white text-black border-white' : 'bg-black/60 text-gray-200 border-gray-500'}`} title="Switch between the small stream and the full-resolution one">HD</button>
       )}
