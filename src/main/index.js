@@ -58,7 +58,9 @@ const log = (message) => {
   send('log', line);
 };
 
+let lastUpdateStatus = null;
 const send = (channel, payload) => {
+  if (channel === 'update:status') lastUpdateStatus = payload;
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
 };
 
@@ -222,13 +224,14 @@ const registerIpc = () => {
     }
     return '';
   });
+  ipcMain.handle('update:status', () => lastUpdateStatus);
   ipcMain.handle('app:open-releases', () => shell.openExternal('https://github.com/Joepowles/fgr-scale-station/releases'));
   ipcMain.handle('window:toggle-fullscreen', () => { win.setFullScreen(!win.isFullScreen()); return win.isFullScreen(); });
   ipcMain.handle('window:is-fullscreen', () => win.isFullScreen());
   // The downloaded update is applied by quitting into the installer, which
   // relaunches the app when done. Without this it happens on the next quit.
   ipcMain.handle('update:install', () => { if (updater) { setImmediate(() => updater.quitAndInstall(true, true)); return true; } return false; });
-  // The Changelog tab's button. Progress and the outcome arrive on update:status.
+  // The Updates tab's button. Progress and the outcome arrive on update:status.
   ipcMain.handle('update:check', async () => {
     if (!updater) return { state: app.isPackaged ? 'error' : 'dev', message: app.isPackaged ? 'Updater not available' : 'Updates only apply to the installed app' };
     try {

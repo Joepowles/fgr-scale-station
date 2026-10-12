@@ -12,7 +12,7 @@ const TABS = [
   { key: 'plates', label: 'Plates' },
   { key: 'scale', label: 'Scale' },
   { key: 'history', label: 'History' },
-  { key: 'changelog', label: 'Changelog' },
+  { key: 'changelog', label: 'Updates' },
   { key: 'support', label: 'Bug report' }
 ];
 

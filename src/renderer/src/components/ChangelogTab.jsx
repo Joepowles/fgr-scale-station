@@ -10,8 +10,11 @@ export default function ChangelogTab({ draft, patch, info }) {
   const [checking, setChecking] = useState(false);
   useEffect(() => {
     window.station.changelog().then(setText);
+    // An update downloaded before this tab was opened is still shown.
+    window.station.updates.status().then((s) => { if (s) setStatus((current) => current || s); });
     return window.station.updates.onStatus(setStatus);
   }, []);
+  const ready = status?.state === 'ready';
 
   const check = async () => {
     setChecking(true);
@@ -22,7 +25,7 @@ export default function ChangelogTab({ draft, patch, info }) {
     checking: 'Checking…',
     none: `You are up to date (${status.version || info.version}).`,
     downloading: `Downloading ${status.version || 'the update'}${status.percent ? ` · ${status.percent}%` : ''}…`,
-    ready: `Version ${status.version} is downloaded. Use "Restart to update" in the header to install it.`,
+    ready: `Version ${status.version} is downloaded. Restart to install it.`,
     error: `Could not ${status.retryMinutes ? 'update' : 'check'}: ${status.message}${status.retryMinutes ? ` · trying again in ${status.retryMinutes} min` : ''}`,
     dev: status.message
   }[status.state] || '';
@@ -39,13 +42,19 @@ export default function ChangelogTab({ draft, patch, info }) {
     <div className="space-y-5">
       <div className="rounded-md border border-emerald-900 bg-emerald-950/40 p-3 flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h3 className="text-sm font-semibold text-emerald-200">Changelog</h3>
+          <h3 className="text-sm font-semibold text-emerald-200">Updates</h3>
           <p className="text-xs text-emerald-300/80 mt-0.5">You are on version {info.version}. Updates download on their own when the PC has internet and install from the button in the header.</p>
           {statusText && <p className={`text-xs mt-1 ${status?.state === 'error' ? 'text-amber-300' : 'text-emerald-200'}`}>{statusText}</p>}
         </div>
-        <button type="button" onClick={check} disabled={checking} className="px-3 py-1.5 text-sm rounded-md bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-50 whitespace-nowrap">
-          {checking ? 'Checking…' : 'Check for updates'}
-        </button>
+        {ready ? (
+          <button type="button" onClick={() => window.station.updates.install()} className="px-3 py-1.5 text-sm rounded-md bg-emerald-700 hover:bg-emerald-600 text-white whitespace-nowrap" title="Closes the app, installs the update and opens it again">
+            Restart to update
+          </button>
+        ) : (
+          <button type="button" onClick={check} disabled={checking} className="px-3 py-1.5 text-sm rounded-md bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-50 whitespace-nowrap">
+            {checking ? 'Checking…' : 'Check for updates'}
+          </button>
+        )}
       </div>
       <section className="grid grid-cols-1 md:grid-cols-2 gap-5">
         <label className="block text-xs text-gray-400">Update channel

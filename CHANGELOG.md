@@ -1,6 +1,6 @@
 # Changelog
 
-Newest first. The app shows this file on the Changelog tab of its settings.
+Newest first. The app shows this file on the Updates tab of its settings.
 
 ## 0.1.14
 
@@ -8,7 +8,8 @@ Newest first. The app shows this file on the Changelog tab of its settings.
 
 ## 0.1.13
 
-- Two update channels, chosen on the Changelog tab. Stable, the default, takes releases only. Beta also takes pre-release builds as they are published, for the one PC that tries things first, and goes back to the stable release when switched back. A button opens the releases page for installing a build by hand.
+- The Changelog tab is now the Updates tab. Once an update is downloaded, its button becomes "Restart to update".
+- Two update channels, chosen on the Updates tab. Stable, the default, takes releases only. Beta also takes pre-release builds as they are published, for the one PC that tries things first, and goes back to the stable release when switched back. A button opens the releases page for installing a build by hand.
 
 - A truck still rocking on the deck is no longer taken as settled on indicators that send no line endings: the motion flag at the end of each reading was being cut off.
 - With "Save log" off, saved photos are kept for the retention period. Before, every photo was deleted when the app started and every hour after.
