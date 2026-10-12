@@ -176,7 +176,14 @@ const startFfmpeg = (state) => {
     // keyframes, so this is also how long a new viewer waits for playable
     // video - the camera's own GOP can be several seconds.
     '-g', '30',
-    ...(process.env.CAMERA_STREAM_FPS ? ['-r', String(process.env.CAMERA_STREAM_FPS)] : []),
+    // A fixed output rate, always. The yard's GeoVision camera does not say
+    // its frame rate in a way ffmpeg can always detect; when it cannot, it
+    // takes 90k fps, and libx264 shares the bitrate out over 90,000 frames a
+    // second: q=69, a gray blocky picture that only the moving parts redraw,
+    // until a reconnect happens to detect the rate (issue #8). 15 fps is
+    // plenty for a scale and halves the encoding at 1080p.
+    '-fps_mode', 'cfr',
+    '-r', String(process.env.CAMERA_STREAM_FPS || '15'),
     '-f', 'mp4',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
     '-'
