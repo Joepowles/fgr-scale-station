@@ -109,7 +109,6 @@ const consumeBoxes = (state, chunk) => {
         state.initSegment = Buffer.concat(state.initParts);
         state.initParts = [];
         state.initReady = true;
-        flushPending(state);
       }
       continue;
     }
@@ -117,6 +116,8 @@ const consumeBoxes = (state, chunk) => {
     if (type === 'moof') {
       state.heldMoof = box;
     } else if (type === 'mdat' && state.heldMoof) {
+      // A fragment that opens on a keyframe is where waiting viewers start.
+      if (startsOnKeyframe(state.heldMoof)) admitPending(state);
       broadcast(state, Buffer.concat([state.heldMoof, box]));
       state.heldMoof = null;
     } else {
@@ -130,13 +131,57 @@ const writeTo = (res, buf) => {
   try { res.write(buf); return true; } catch { return false; }
 };
 
-// Viewers that arrived before the init segment existed. They cannot be sent
-// anything until it does, so they wait rather than receive unplayable bytes.
-const flushPending = (state) => {
+// New viewers wait for the next fragment that opens on a keyframe, then get
+// the init segment and everything from that fragment on. Fragments are one
+// frame each, so most are not decodable on their own: a viewer started on
+// one would see gray blocks until the next keyframe.
+const admitPending = (state) => {
+  if (!state.initSegment) return;
   for (const res of state.pending) {
     if (writeTo(res, state.initSegment)) state.subscribers.add(res);
   }
   state.pending.clear();
+};
+
+const child = (buf, start, end, type) => {
+  for (let at = start; at + 8 <= end;) {
+    const size = buf.readUInt32BE(at);
+    if (size < 8 || at + size > end) return null;
+    if (buf.toString('ascii', at + 4, at + 8) === type) return { start: at + 8, end: at + size };
+    at += size;
+  }
+  return null;
+};
+
+/**
+ * Whether a moof's first sample is a keyframe. Its flags are, in order of
+ * precedence: trun's first_sample_flags, trun's first per-sample flags,
+ * tfhd's default_sample_flags. The non-sync bit (0x10000) clear means a
+ * keyframe; ffmpeg marks its keyframes in first_sample_flags. A moof that
+ * cannot be read counts as a keyframe, so a viewer is never kept waiting by
+ * a fragment this does not understand.
+ */
+const startsOnKeyframe = (moof) => {
+  try {
+    const traf = child(moof, 8, moof.length, 'traf');
+    const trun = traf && child(moof, traf.start, traf.end, 'trun');
+    if (!trun) return true;
+    const trunFlags = moof.readUInt32BE(trun.start) & 0xffffff;
+    let at = trun.start + 8 + (trunFlags & 0x1 ? 4 : 0);
+    let flags = null;
+    if (trunFlags & 0x4) flags = moof.readUInt32BE(at);
+    else if (trunFlags & 0x400) flags = moof.readUInt32BE(at + (trunFlags & 0x100 ? 4 : 0) + (trunFlags & 0x200 ? 4 : 0));
+    else {
+      const tfhd = child(moof, traf.start, traf.end, 'tfhd');
+      const tfhdFlags = tfhd ? moof.readUInt32BE(tfhd.start) & 0xffffff : 0;
+      if (!(tfhdFlags & 0x20)) return true;
+      at = tfhd.start + 8 + (tfhdFlags & 0x1 ? 8 : 0) + (tfhdFlags & 0x2 ? 4 : 0) + (tfhdFlags & 0x8 ? 4 : 0) + (tfhdFlags & 0x10 ? 4 : 0);
+      flags = moof.readUInt32BE(at);
+    }
+    return !(flags & 0x10000);
+  } catch {
+    return true;
+  }
 };
 
 const broadcast = (state, box) => {
@@ -172,9 +217,9 @@ const startFfmpeg = (state) => {
     '-preset', 'ultrafast',
     '-tune', 'zerolatency',
     '-b:v', String(process.env.CAMERA_STREAM_BITRATE || '1500k'),
-    // Forces a keyframe about every two seconds. Fragments are cut at
-    // keyframes, so this is also how long a new viewer waits for playable
-    // video - the camera's own GOP can be several seconds.
+    // Forces a keyframe every two seconds at 15 fps. A new viewer starts at
+    // a keyframe, so this is how long one waits for playable video - the
+    // camera's own GOP can be several seconds.
     '-g', '30',
     // A fixed output rate, always. The yard's GeoVision camera does not say
     // its frame rate in a way ffmpeg can always detect; when it cannot, it
@@ -185,7 +230,10 @@ const startFfmpeg = (state) => {
     '-fps_mode', 'cfr',
     '-r', String(process.env.CAMERA_STREAM_FPS || '15'),
     '-f', 'mp4',
-    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+    // One fragment per frame, so each frame goes out as soon as it is
+    // encoded. Fragments cut only at keyframes held every frame back until
+    // the next keyframe: two seconds of delay, always (issue #9).
+    '-movflags', 'frag_every_frame+empty_moov+default_base_moof',
     '-'
   ];
 
@@ -298,20 +346,17 @@ const streamRtspToFmp4 = (rtspUrl, res) => {
 
   if (state.lingerTimer) { clearTimeout(state.lingerTimer); state.lingerTimer = null; }
 
-  if (state.initReady && state.initSegment) {
-    if (writeTo(res, state.initSegment)) state.subscribers.add(res);
-  } else {
-    state.pending.add(res);
-    // A camera that accepts the connection but never produces a decodable
-    // stream would otherwise leave the viewer waiting on a blank player
-    // forever with no indication anything is wrong.
-    const giveUp = setTimeout(() => {
-      if (state.pending.delete(res)) {
-        try { if (!res.writableEnded) res.end(); } catch {}
-      }
-    }, IDLE_INIT_TIMEOUT_MS);
-    giveUp.unref?.();
-  }
+  // Every viewer waits for a keyframe; see admitPending.
+  state.pending.add(res);
+  // A camera that accepts the connection but never produces a decodable
+  // stream would otherwise leave the viewer waiting on a blank player
+  // forever with no indication anything is wrong.
+  const giveUp = setTimeout(() => {
+    if (state.pending.delete(res)) {
+      try { if (!res.writableEnded) res.end(); } catch {}
+    }
+  }, IDLE_INIT_TIMEOUT_MS);
+  giveUp.unref?.();
 
   const detach = () => {
     state.subscribers.delete(res);
@@ -343,4 +388,4 @@ const activeCameraStreams = () =>
     restarts: s.restartCount
   }));
 
-module.exports = { streamRtspToFmp4, stopAllCameraStreams, reconnectCameraStreams, activeCameraStreams, consumeBoxes, trackLag };
+module.exports = { streamRtspToFmp4, stopAllCameraStreams, reconnectCameraStreams, activeCameraStreams, consumeBoxes, trackLag, startsOnKeyframe };

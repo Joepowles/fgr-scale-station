@@ -2,7 +2,7 @@
 // Run with: node --test tests/cameraStream.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { consumeBoxes, trackLag } = require('../src/main/services/cameraStream');
+const { consumeBoxes, trackLag, startsOnKeyframe } = require('../src/main/services/cameraStream');
 
 const box = (type, payload = 'x') => {
   const body = Buffer.from(payload);
@@ -25,13 +25,15 @@ const fresh = () => ({
   initParts: [], initSegment: null, initReady: false, heldMoof: null, lingerTimer: null
 });
 
-test('keeps ftyp + moov as the init segment and hands it to waiting viewers', () => {
+test('keeps ftyp + moov as the init segment and hands it to waiting viewers with the first fragment', () => {
   const state = fresh();
   const early = viewer();
   state.pending.add(early);
   consumeBoxes(state, Buffer.concat([box('ftyp'), box('moov')]));
   assert.deepEqual(typesIn(state.initSegment), ['ftyp', 'moov']);
-  assert.deepEqual(early.types(), [['ftyp', 'moov']]);
+  assert.deepEqual(early.types(), []);
+  consumeBoxes(state, Buffer.concat([box('moof'), box('mdat')]));
+  assert.deepEqual(early.types(), [['ftyp', 'moov'], ['moof', 'mdat']]);
 });
 
 test('sends each moof together with its mdat, however the bytes are split', () => {
@@ -65,4 +67,30 @@ test('measures how far ffmpeg falls behind the clock from its time= stats', () =
   assert.equal(trackLag(state, line('00:00:17.00'), 120000), 4);
   assert.equal(trackLag(state, line('00:01:02.50'), 166000), 4.5);
   assert.equal(trackLag(state, 'time=N/A', 170000), 0);
+});
+
+// A moof as ffmpeg writes one per frame: tfhd with default_sample_flags
+// non-sync, and trun with first_sample_flags only on a keyframe.
+const frameMoof = (key) => {
+  const full = (type, flags, body) => box(type, Buffer.concat([Buffer.from([0, flags >> 16, (flags >> 8) & 0xff, flags & 0xff]), body]));
+  const u32 = (...n) => Buffer.concat(n.map((v) => { const b = Buffer.alloc(4); b.writeUInt32BE(v >>> 0); return b; }));
+  const tfhd = full('tfhd', 0x20038, u32(1, 3000, 900, 0x1010000));
+  const trun = key ? full('trun', 0x5, u32(1, 120, 0x2000000)) : full('trun', 0x1, u32(1, 120));
+  return box('moof', Buffer.concat([box('mfhd', Buffer.alloc(8)), box('traf', Buffer.concat([tfhd, box('tfdt', Buffer.alloc(12)), trun]))]));
+};
+
+test('tells a keyframe fragment from the rest', () => {
+  assert.equal(startsOnKeyframe(frameMoof(true)), true);
+  assert.equal(startsOnKeyframe(frameMoof(false)), false);
+  assert.equal(startsOnKeyframe(box('moof')), true);
+});
+
+test('a viewer who joins mid-stream starts at the next keyframe, then gets every frame', () => {
+  const state = fresh();
+  consumeBoxes(state, Buffer.concat([box('ftyp'), box('moov'), frameMoof(true), box('mdat'), frameMoof(false), box('mdat')]));
+  const late = viewer();
+  state.pending.add(late);
+  consumeBoxes(state, Buffer.concat([frameMoof(false), box('mdat'), frameMoof(true), box('mdat'), frameMoof(false), box('mdat')]));
+  assert.deepEqual(late.types(), [['ftyp', 'moov'], ['moof', 'mdat'], ['moof', 'mdat']]);
+  assert.equal(startsOnKeyframe(late.writes[1]), true);
 });
