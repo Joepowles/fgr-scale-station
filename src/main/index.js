@@ -9,6 +9,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen, clipboard } = 
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
+const util = require('util');
 const settingsStore = require('./settings');
 const paths = require('./paths');
 const { ScaleReader, testConnection } = require('./services/scaleReader');
@@ -49,14 +50,27 @@ const appendLogFile = (line) => {
     }
   } catch {}
 };
+const consoleLog = console.log.bind(console);
 const log = (message) => {
   const line = `${new Date().toISOString()} ${message}`;
   logLines.push(line);
   if (logLines.length > 500) logLines.shift();
-  console.log(line);
+  consoleLog(line);
   appendLogFile(line);
   send('log', line);
 };
+
+// The services report on the console, each line tagged ([camera-stream],
+// [PlateReader] ...). Those go in the log too: without them a bug report
+// could not show what the camera stream did.
+for (const level of ['log', 'warn', 'error']) {
+  const original = console[level].bind(console);
+  console[level] = (...args) => {
+    const text = util.format(...args);
+    if (text.startsWith('[')) log(text);
+    else original(...args);
+  };
+}
 
 let lastUpdateStatus = null;
 const send = (channel, payload) => {

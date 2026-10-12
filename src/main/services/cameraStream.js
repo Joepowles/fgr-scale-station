@@ -40,6 +40,17 @@ const RESTART_DELAY_MS = 2000;
 const LINGER_MS = 5000;
 const IDLE_INIT_TIMEOUT_MS = 15000;
 const MAX_ENCODER_LAG_S = 5;
+const WARN_EVERY_MS = 60 * 1000;
+
+// ffmpeg can repeat a complaint many times a second; the log gets it once a
+// minute, with how many were held back.
+const warnAtMostEvery = (state, key, message) => {
+  const w = (state.warned ??= {})[key] ??= { at: 0, held: 0 };
+  if (Date.now() - w.at < WARN_EVERY_MS) { w.held += 1; return; }
+  console.warn(`[camera-stream] ${message}${w.held ? ` (and ${w.held} more like it)` : ''}`);
+  w.at = Date.now();
+  w.held = 0;
+};
 
 /**
  * How many seconds ffmpeg has fallen behind since its first progress line.
@@ -170,6 +181,7 @@ const startFfmpeg = (state) => {
     '-'
   ];
 
+  console.log('[camera-stream] connecting to the camera');
   const ff = spawn(ffmpegPath(), args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   state.ff = ff;
 
@@ -178,18 +190,16 @@ const startFfmpeg = (state) => {
   ff.stderr.on('data', (d) => {
     const text = String(d);
     // ffmpeg falling behind the camera, from a busy CPU or a camera clock
-    // that runs slow, cannot be fixed in the player: every viewer, even one
-    // who reconnects, gets the same late picture. Starting again rejoins the
-    // camera at the present.
+    // that runs slow, cannot be fixed in the player. It is only reported:
+    // restarting for it (0.1.14-beta.4) left the picture gray, because a
+    // fresh connection decodes nothing whole until the camera's next
+    // keyframe, and the restarts came sooner than that (issue #6).
     const behind = trackLag(state, text, Date.now());
-    if (behind > MAX_ENCODER_LAG_S) {
-      console.warn(`[camera-stream] ${behind.toFixed(1)}s behind the camera; reconnecting`);
-      restart(state);
-      return;
-    }
+    if (behind > MAX_ENCODER_LAG_S) warnAtMostEvery(state, 'lag', `${behind.toFixed(1)}s behind the camera`);
     // ffmpeg quotes the input URL back on failure, credentials included.
-    if (/error|failed|unauthor/i.test(text)) {
-      console.warn(`[camera-stream] ${text.replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@').trim().split('\n')[0]}`);
+    // "Could not find ref" is the decoder missing a frame: the gray blocks.
+    if (/error|failed|unauthor|could not find ref/i.test(text)) {
+      warnAtMostEvery(state, 'ffmpeg', text.replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@').trim().split('\n')[0]);
     }
   });
 
