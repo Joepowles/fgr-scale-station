@@ -2,7 +2,7 @@
 // Run with: node --test tests/cameraStream.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { consumeBoxes } = require('../src/main/services/cameraStream');
+const { consumeBoxes, trackLag } = require('../src/main/services/cameraStream');
 
 const box = (type, payload = 'x') => {
   const body = Buffer.from(payload);
@@ -53,4 +53,16 @@ test('a viewer who joins between a moof and its mdat starts at the next whole fr
   consumeBoxes(state, Buffer.concat([box('mdat'), box('moof'), box('mdat')]));
   // It used to get that first mdat on its own, with no moof to decode it by.
   assert.deepEqual(late.types(), [['ftyp', 'moov'], ['moof', 'mdat'], ['moof', 'mdat']]);
+});
+
+test('measures how far ffmpeg falls behind the clock from its time= stats', () => {
+  const state = {};
+  const line = (t) => `frame=  10 fps= 15 q=-1.0 size=  1kB time=${t} bitrate= 1kbits/s speed=1x\r`;
+  // The first reading is the baseline: connecting is not lag.
+  assert.equal(trackLag(state, line('00:00:01.00'), 100000), 0);
+  assert.equal(trackLag(state, line('00:00:11.00'), 110000), 0);
+  // Ten more seconds of clock, six of media: four seconds behind.
+  assert.equal(trackLag(state, line('00:00:17.00'), 120000), 4);
+  assert.equal(trackLag(state, line('00:01:02.50'), 166000), 4.5);
+  assert.equal(trackLag(state, 'time=N/A', 170000), 0);
 });

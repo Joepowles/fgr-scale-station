@@ -39,6 +39,22 @@ const MAX_RESTARTS = 50;
 const RESTART_DELAY_MS = 2000;
 const LINGER_MS = 5000;
 const IDLE_INIT_TIMEOUT_MS = 15000;
+const MAX_ENCODER_LAG_S = 5;
+
+/**
+ * How many seconds ffmpeg has fallen behind since its first progress line.
+ *
+ * Its stats carry time=, the media time written so far. Live, that should
+ * advance with the clock; wall time minus media time is the delay, and its
+ * growth beyond the first reading (connecting, the first keyframe) is lag.
+ */
+const trackLag = (state, text, now) => {
+  const m = /time=\s*(\d+):(\d+):([\d.]+)/.exec(text);
+  if (!m) return 0;
+  const offset = now / 1000 - (Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]));
+  if (state.lagBaseline == null) state.lagBaseline = offset;
+  return offset - state.lagBaseline;
+};
 
 /**
  * Split a byte stream into whole MP4 boxes.
@@ -161,6 +177,16 @@ const startFfmpeg = (state) => {
 
   ff.stderr.on('data', (d) => {
     const text = String(d);
+    // ffmpeg falling behind the camera, from a busy CPU or a camera clock
+    // that runs slow, cannot be fixed in the player: every viewer, even one
+    // who reconnects, gets the same late picture. Starting again rejoins the
+    // camera at the present.
+    const behind = trackLag(state, text, Date.now());
+    if (behind > MAX_ENCODER_LAG_S) {
+      console.warn(`[camera-stream] ${behind.toFixed(1)}s behind the camera; reconnecting`);
+      restart(state);
+      return;
+    }
     // ffmpeg quotes the input URL back on failure, credentials included.
     if (/error|failed|unauthor/i.test(text)) {
       console.warn(`[camera-stream] ${text.replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@').trim().split('\n')[0]}`);
@@ -168,7 +194,7 @@ const startFfmpeg = (state) => {
   });
 
   ff.on('close', (code) => {
-    if (!state.active) return;
+    if (!state.active || state.ff !== ff) return;
     state.restartCount += 1;
     if (state.restartCount > MAX_RESTARTS) {
       console.error(`[camera-stream] giving up after ${MAX_RESTARTS} restarts`);
@@ -196,6 +222,7 @@ const restart = (state) => {
   state.initSegment = null;
   state.initReady = false;
   state.heldMoof = null;
+  state.lagBaseline = null;
   if (state.restartTimer) clearTimeout(state.restartTimer);
   state.restartTimer = setTimeout(() => { state.restartTimer = null; startFfmpeg(state); }, RESTART_DELAY_MS);
   state.restartTimer.unref?.();
@@ -279,4 +306,4 @@ const activeCameraStreams = () =>
     restarts: s.restartCount
   }));
 
-module.exports = { streamRtspToFmp4, stopAllCameraStreams, activeCameraStreams, consumeBoxes };
+module.exports = { streamRtspToFmp4, stopAllCameraStreams, activeCameraStreams, consumeBoxes, trackLag };
