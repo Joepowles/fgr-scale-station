@@ -23,7 +23,9 @@ const DEFAULTS = {
     overlayCorner: 'top-left',
     retryAttempts: 10,
     retrySeconds: 3,
-    stampPhoto: true
+    stampPhoto: true,
+    requireDigit: true,       // a word with no digit is a sign, not a plate
+    ignoreWords: ''           // yard signage the reader keeps finding, comma-separated
   },
   scale: {
     enabled: false,

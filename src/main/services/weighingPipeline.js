@@ -10,6 +10,7 @@ const detector = require('./vehicleDetector');
 const plateReader = require('./plateReader');
 const { captureRtspSnapshot } = require('./rtspSnapshot');
 const { formatWeight } = require('./scaleFrames');
+const { pickPlate } = require('./plateFilter');
 
 const PLATE_CONFIDENT = 0.9;
 const PLATE_CROP_MARGIN = 0.15;
@@ -25,7 +26,9 @@ const oppositeCorner = (corner) => ({
 }[corner] || 'bottom-right');
 
 // Crop the vehicle out of a full-resolution frame and read its plate.
-const readPlateInBox = async (hdFrame, box) => {
+// filter: the plates settings (requireDigit, ignoreWords), so a dealer
+// placard in the plate holder is not taken for a plate.
+const readPlateInBox = async (hdFrame, box, filter = {}) => {
   const sharp = require('sharp');
   const image = sharp(hdFrame, { failOn: 'none' });
   const { width: W, height: H } = await image.metadata();
@@ -40,8 +43,8 @@ const readPlateInBox = async (hdFrame, box) => {
   if (right - left < 16 || bottom - top < 16) return null;
   const crop = await image.extract({ left, top, width: right - left, height: bottom - top }).jpeg({ quality: 92 }).toBuffer();
   const { plates } = await plateReader.readPlates(crop);
-  if (!plates.length) return null;
-  const best = plates.slice().sort((a, b) => b.confidence - a.confidence)[0];
+  const best = pickPlate(plates, filter);
+  if (!best) return null;
   return { text: best.text, confidence: Math.round(best.confidence * 100) / 100, frameWidth: W, frameHeight: H };
 };
 
@@ -130,7 +133,7 @@ class WeighingPipeline {
     const hd = await captureRtspSnapshot(hdUrl, s.camera.username, s.camera.password, 12000);
     let plate = null;
     for (const v of vehicles) {
-      const read = await readPlateInBox(hd, v.box);
+      const read = await readPlateInBox(hd, v.box, s.plates);
       if (read && (!plate || read.confidence > plate.confidence)) plate = read;
     }
     return { plate, error: plate ? '' : `No plate found on the ${vehicles.length === 1 ? 'vehicle' : `${vehicles.length} vehicles`}.`, image: frame, detections: result.detections, ms: Date.now() - startedAt };
@@ -168,7 +171,7 @@ class WeighingPipeline {
       const tryPlate = async (attempt) => {
         try {
           const hd = await captureRtspSnapshot(hdUrl, s.camera.username, s.camera.password, 12000);
-          const read = await readPlateInBox(hd, target.box);
+          const read = await readPlateInBox(hd, target.box, s.plates);
           if (!read) { this.log(`no plate found on the ${target.label} (attempt ${attempt})`); return false; }
           if (read.confidence < s.plates.minConfidence) { this.log(`plate "${read.text}" at ${Math.round(read.confidence * 100)}%, under the floor (attempt ${attempt})`); return false; }
           if (!plate || read.confidence > plate.confidence) {

@@ -33,6 +33,12 @@ export default function PlatesTab({ draft, patch, info }) {
             <label className="block text-xs text-gray-400">Seconds between tries<input type="number" min={1} max={30} className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm mt-1" value={p.retrySeconds} onChange={(e) => patch('plates', { retrySeconds: Number(e.target.value) })} /></label>
           </div>
           <p className="text-[11px] text-gray-500">The reader keeps trying while the truck is on the deck until it is at least 90% sure, and puts the better read on the history entry.</p>
+          <label className="flex items-center gap-2 text-xs text-gray-300"><input type="checkbox" checked={p.requireDigit !== false} onChange={(e) => patch('plates', { requireDigit: e.target.checked })} /> A plate must contain a digit</label>
+          <p className="text-[11px] text-gray-500 -mt-2">Dealer placards and stickers in the plate holder read as words. Commercial plates have digits; all-letter vanity plates would be missed.</p>
+          <label className="block text-xs text-gray-400">Ignore these words
+            <input className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm mt-1 mono" value={p.ignoreWords || ''} onChange={(e) => patch('plates', { ignoreWords: e.target.value })} placeholder="RUBLE, KENWORTH" />
+            <span className="text-[11px] text-gray-500">Signage the reader keeps picking up, separated by commas. The same text found twice in one picture is ignored on its own.</span>
+          </label>
           <label className="flex items-center gap-2 text-xs text-gray-300"><input type="checkbox" checked={p.stampPhoto !== false} onChange={(e) => patch('plates', { stampPhoto: e.target.checked })} /> Stamp the plate on the saved photo</label>
           <div className="text-xs text-gray-400">Corner of the picture for the plate
             <div className="grid grid-cols-2 gap-1.5 mt-1 max-w-xs">
