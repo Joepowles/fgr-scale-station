@@ -4,13 +4,12 @@ Newest first. The app shows this file on the Updates tab of its settings.
 
 ## 0.1.14
 
+- The Changelog tab is now the Updates tab. Once an update is downloaded, its button becomes "Restart to update".
 - The plate reader no longer needs Python. The same plate models now run in a small built-in reader, which reads the same plates, starts in under a second and is a little quicker per read. The installer is about a fifth smaller (247 MB, from 316 MB), and the installed app 240 MB smaller.
 
 ## 0.1.13
 
-- The Changelog tab is now the Updates tab. Once an update is downloaded, its button becomes "Restart to update".
 - Two update channels, chosen on the Updates tab. Stable, the default, takes releases only. Beta also takes pre-release builds as they are published, for the one PC that tries things first, and goes back to the stable release when switched back. A button opens the releases page for installing a build by hand.
-
 - A truck still rocking on the deck is no longer taken as settled on indicators that send no line endings: the motion flag at the end of each reading was being cut off.
 - With "Save log" off, saved photos are kept for the retention period. Before, every photo was deleted when the app started and every hour after.
 - The live view no longer freezes now and then when it is opened: a viewer could start partway through a frame and the player stalled on it.
