@@ -37,14 +37,11 @@ jobs:
       # electron-builder uploads the installer, the update feed and the
       # blockmap in parallel, and when no release exists yet each upload can
       # create its own. Making the release first means they all land on it.
-      # It starts as a draft, which the installed apps cannot see: a published
-      # release with no update feed on it yet makes every PC that checks in
-      # meanwhile fail with "Cannot find latest.yml" (issue #5).
       - name: Create the release
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release view "${{ github.ref_name }}" > $null 2>&1 || gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes "Falcon Scale Station ${{ github.ref_name }}" --draft ${{ contains(github.ref_name, '-') && '--prerelease' || '' }}
+        run: gh release view "${{ github.ref_name }}" > $null 2>&1 || gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes "Falcon Scale Station ${{ github.ref_name }}" ${{ contains(github.ref_name, '-') && '--prerelease' || '' }}
       - name: Package and publish
         # bash, not the runner's default PowerShell: PowerShell splits
         # -c.publish.channel=beta at the dot and electron-builder then reads
@@ -53,12 +50,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder --win --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }} ${{ contains(github.ref_name, '-') && '-c.publish.channel=beta -c.publish.releaseType=prerelease' || '' }}
-      # Now the installer, update feed and blockmap are all on it.
-      - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${{ github.ref_name }}" --draft=false
       # One release per tag, and only the newest few kept: each installer is
       # a few hundred MB, and the installed app only ever looks at the latest.
       - name: Tidy releases

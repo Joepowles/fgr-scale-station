@@ -5,7 +5,7 @@
 // photographs and reads the plate, the history keeps it. The window talks to
 // all of it over IPC, and gets the camera picture from a local HTTP server
 // (fragmented MP4 from ffmpeg) because <video> wants a URL, not a buffer.
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen, clipboard } = require('electron');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
@@ -225,6 +225,7 @@ const registerIpc = () => {
     return '';
   });
   ipcMain.handle('update:status', () => lastUpdateStatus);
+  ipcMain.handle('app:copy', (_e, text) => { clipboard.writeText(String(text ?? '')); return true; });
   ipcMain.handle('app:open-releases', () => shell.openExternal('https://github.com/Joepowles/fgr-scale-station/releases'));
   ipcMain.handle('window:toggle-fullscreen', () => { win.setFullScreen(!win.isFullScreen()); return win.isFullScreen(); });
   ipcMain.handle('window:is-fullscreen', () => win.isFullScreen());
@@ -240,7 +241,8 @@ const registerIpc = () => {
       const newer = !!version && version !== app.getVersion();
       return { state: newer ? 'downloading' : 'none', version: version || app.getVersion() };
     } catch (err) {
-      return { state: 'error', message: err.message };
+      // The updater's error event, just sent, has put it in plain words.
+      return lastUpdateStatus?.state === 'error' ? lastUpdateStatus : { state: 'error', message: err.message, detail: err.stack };
     }
   });
 };
@@ -323,8 +325,15 @@ const startUpdater = () => {
     autoUpdater.on('error', (err) => {
       const minutes = RETRY_MINUTES[Math.min(failures, RETRY_MINUTES.length - 1)];
       failures += 1;
+      // GitHub lists a new tag in the release feed the moment it is pushed,
+      // minutes before the build puts the update file on it; a check in that
+      // gap lands here (issue #5). The beta channel's fallback to latest.yml
+      // also hides why beta.yml failed, so the whole error goes with Copy.
+      const message = err.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'
+        ? 'the newest release has no update file yet. It is probably still being published'
+        : err.message;
       log(`updater: ${err.message}; trying again in ${minutes} min`);
-      send('update:status', { state: 'error', message: err.message, retryMinutes: minutes });
+      send('update:status', { state: 'error', message, detail: err.stack || err.message, retryMinutes: minutes });
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = setTimeout(() => { retryTimer = null; check(); }, minutes * 60 * 1000);
     });
@@ -335,7 +344,20 @@ const startUpdater = () => {
   }
 };
 
+// One copy at a time. A second one reads the same scale, so every truck was
+// weighed and logged twice (issue #5); opening the app again brings the
+// running window forward instead.
+const primary = app.requestSingleInstanceLock();
+if (!primary) app.exit(0);
+app.on('second-instance', () => {
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+});
+
 app.whenReady().then(async () => {
+  if (!primary) return;
   await startServer();
   registerIpc();
   createWindow();

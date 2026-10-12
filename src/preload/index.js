@@ -12,6 +12,7 @@ const on = (channel) => (handler) => {
 contextBridge.exposeInMainWorld('station', {
   info: call('app:info'),
   changelog: call('app:changelog'),
+  copy: call('app:copy'),
   settings: { get: call('settings:get'), save: call('settings:save'), defaults: call('settings:defaults') },
   scale: {
     status: call('scale:status'), test: call('scale:test'), discover: call('scale:discover'),

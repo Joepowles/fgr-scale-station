@@ -8,6 +8,7 @@ export default function ChangelogTab({ draft, patch, info }) {
   const [text, setText] = useState('');
   const [status, setStatus] = useState(null);
   const [checking, setChecking] = useState(false);
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
     window.station.changelog().then(setText);
     // An update downloaded before this tab was opened is still shown.
@@ -26,9 +27,17 @@ export default function ChangelogTab({ draft, patch, info }) {
     none: `You are up to date (${status.version || info.version}).`,
     downloading: `Downloading ${status.version || 'the update'}${status.percent ? ` · ${status.percent}%` : ''}…`,
     ready: `Version ${status.version} is downloaded. Restart to install it.`,
-    error: `Could not ${status.retryMinutes ? 'update' : 'check'}: ${status.message}${status.retryMinutes ? ` · trying again in ${status.retryMinutes} min` : ''}`,
+    // The updater's message runs on with HTTP headers and a stack; the first
+    // line says what went wrong, and Copy error carries the rest.
+    error: `Could not ${status.retryMinutes ? 'update' : 'check'}: ${String(status.message || '').split('\n')[0]}${status.retryMinutes ? ` · trying again in ${status.retryMinutes} min` : ''}`,
     dev: status.message
   }[status.state] || '';
+
+  const copyError = async () => {
+    await window.station.copy(`Falcon Scale Station ${info.version}, ${channel} channel, ${new Date().toISOString()}\n${status?.message || ''}${status?.detail && status.detail !== status.message ? `\n\n${status.detail}` : ''}`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   const sections = [];
   for (const line of text.split(/\r?\n/)) {
@@ -44,7 +53,12 @@ export default function ChangelogTab({ draft, patch, info }) {
         <div>
           <h3 className="text-sm font-semibold text-emerald-200">Updates</h3>
           <p className="text-xs text-emerald-300/80 mt-0.5">You are on version {info.version}. Updates download on their own when the PC has internet and install from the button in the header.</p>
-          {statusText && <p className={`text-xs mt-1 ${status?.state === 'error' ? 'text-amber-300' : 'text-emerald-200'}`}>{statusText}</p>}
+          {statusText && <p className={`text-xs mt-1 select-text ${status?.state === 'error' ? 'text-amber-300' : 'text-emerald-200'}`}>{statusText}</p>}
+          {status?.state === 'error' && (
+            <button type="button" onClick={copyError} className="mt-1.5 px-2 py-0.5 text-xs rounded border border-amber-700 text-amber-200 hover:bg-amber-900/40">
+              {copied ? 'Copied' : 'Copy error'}
+            </button>
+          )}
         </div>
         {ready ? (
           <button type="button" onClick={() => window.station.updates.install()} className="px-3 py-1.5 text-sm rounded-md bg-emerald-700 hover:bg-emerald-600 text-white whitespace-nowrap" title="Closes the app, installs the update and opens it again">

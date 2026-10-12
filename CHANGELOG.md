@@ -4,6 +4,8 @@ Newest first. The app shows this file on the Updates tab of its settings.
 
 ## 0.1.14
 
+- Only one copy of the app runs at a time. Opening it again while it is running brings the open window forward. Before, a second copy read the same scale and every truck was logged twice.
+- When an update check fails, a "Copy error" button on the Updates tab copies the whole error, to paste into a message. A check made in the few minutes while a new version is still being published now says so, instead of "Cannot find latest.yml".
 - The live view no longer drifts behind the yard. Every hiccup used to add a little delay that was never made up, until people were seen walking in after they had come through the door. The picture now plays a little fast until it is back to the moment, and reconnects if it falls more than 8 seconds behind. If the app's own video conversion falls more than 5 seconds behind the camera (a busy PC, or a camera whose clock runs slow), it reconnects to the camera and says so in the log.
 - Dealer placards and stickers in the plate holder are no longer read as plates. A read with no digit is taken for a sign unless "A plate must contain a digit" is turned off on the Plates tab, words can be listed there to ignore, and the same text found twice in one picture (a placard on each mud flap) is never a plate.
 - The Changelog tab is now the Updates tab. Once an update is downloaded, its button becomes "Restart to update".
