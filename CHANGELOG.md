@@ -2,6 +2,13 @@
 
 Newest first. The app shows this file on the Updates tab of its settings.
 
+## 0.2.0
+
+- The app is rebuilt in Rust. It looks and works the same. Installing it takes the old app off the PC and carries on from its settings: the camera and scale, the window's place, the log and the history and its photos all stay as they were.
+- The plate comes from the truck on the scale. Every plate in the picture is read and the largest is taken, since the truck on the deck is nearest the camera; plates toward the right of the picture count for more. Both are set on the Plates tab: the largest plate or the clearest read, which side to favour (right, left or neither) and by how much. There is no longer a vehicle finder to mistake a truck for a train.
+- Updates carry on from where a dropped download stopped, instead of starting again. A check that fails is tried again within minutes.
+- Going back to the old app is done by hand: Settings, Updates, Open the releases page, and install 0.1.15.
+
 ## 0.1.15
 
 - The plate is read off the truck on the scale, not one parked in the yard behind it. A truck seen head-on with its headlights on at night can be taken for a train by the vehicle finder, and trains were not counted as vehicles, so the photo picked the next vehicle it saw.
