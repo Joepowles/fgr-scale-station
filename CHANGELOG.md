@@ -2,7 +2,7 @@
 
 Newest first. The app shows this file on the Updates tab of its settings.
 
-## 0.1.14
+## 0.1.15
 
 - The plate is read off the truck on the scale, not one parked in the yard behind it. A truck seen head-on with its headlights on at night can be taken for a train by the vehicle finder, and trains were not counted as vehicles, so the photo picked the next vehicle it saw.
 - Only one copy of the app runs at a time. Opening it again while it is running brings the open window forward. Before, a second copy read the same scale and every truck was logged twice.
