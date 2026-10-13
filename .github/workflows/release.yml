@@ -107,12 +107,13 @@ jobs:
           done
       - run: npm ci
         working-directory: rust
-      - run: cargo test
-        working-directory: rust/src-tauri
       - run: node scripts/fetch-ffmpeg.cjs
         working-directory: rust
       # The plate reader and its models, as the Electron app bundles them.
       - run: node scripts/build-plate-reader.js
+      # After the two above: Tauri's build script wants every bundled file there.
+      - run: cargo test
+        working-directory: rust/src-tauri
       - run: npx tauri build
         working-directory: rust
       - run: node scripts/write-update-feed.cjs dist-release
