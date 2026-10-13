@@ -1,7 +1,7 @@
 const js = require('@eslint/js');
 
 module.exports = [
-  { ignores: ['node_modules/**', 'out/**', 'dist/**', 'resources/**', 'src/renderer/**', 'electron.vite.config.js', 'eslint.config.js'] },
+  { ignores: ['node_modules/**', 'rust/**', 'out/**', 'dist/**', 'resources/**', 'src/renderer/**', 'electron.vite.config.js', 'eslint.config.js'] },
   js.configs.recommended,
   {
     files: ['src/main/**/*.js', 'src/preload/**/*.js', 'scripts/**/*.js', 'tests/**/*.js'],
