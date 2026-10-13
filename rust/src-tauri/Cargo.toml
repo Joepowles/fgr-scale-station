@@ -1,0 +1,44 @@
+[package]
+name = "falcon-scale-station"
+version = "0.1.12"
+description = "Falcon Scale Station, with the main process in Rust"
+authors = ["Falcon Green Resources"]
+edition = "2021"
+publish = false
+
+# The library holds everything; main.rs only calls run(). Tauri's mobile
+# targets need it this way, and it lets `cargo test` reach every module.
+[lib]
+name = "station_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["net", "time", "io-util", "macros", "rt-multi-thread", "sync", "process"] }
+socket2 = "0.5"
+regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+if-addrs = "0.15.0"
+fastrand = "2.5.0"
+axum = "0.8.9"
+tauri-plugin-dialog = "2.8.1"
+tauri-plugin-opener = "2.7.0"
+bytes = "1.12.1"
+futures-util = "0.3.34"
+base64 = "0.23.1"
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+imageproc = "0.27.0"
+ab_glyph = "0.2.32"
+sha1 = "0.11.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["native-tls"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

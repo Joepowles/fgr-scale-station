@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "../resources/python-worker/plate_reader_worker.py": "python-worker/plate_reader_worker.py",
+      "../resources/python/": "python/"
+    }
+  }
+}

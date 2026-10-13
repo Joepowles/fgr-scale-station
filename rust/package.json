@@ -1,0 +1,26 @@
+{
+  "name": "falcon-scale-station-rs",
+  "productName": "Falcon Scale Station",
+  "version": "0.1.12",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "tauri": "tauri",
+    "fetch:ffmpeg": "node scripts/fetch-ffmpeg.cjs",
+    "build:python": "node scripts/build-python.cjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/cli": "^2",
+    "@vitejs/plugin-react": "^5.1.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tailwindcss": "^4.3.3",
+    "vite": "^7.3.7"
+  }
+}
