@@ -3,10 +3,9 @@
 //! One window, one camera, one scale. The scale reader raises a weighing;
 //! the pipeline photographs the truck, reads its plate, stamps both on the
 //! picture and writes it to the history; the window shows the live picture
-//! with the weight and plate over it. The bug report and the updater are
-//! still the Electron app's; the window's calls for those answer "not ported
-//! yet" (see src/station.js).
+//! with the weight and plate over it.
 
+mod bug_report;
 mod camera;
 mod history;
 mod pipeline;
@@ -213,6 +212,10 @@ fn apply_settings(app: &AppHandle) {
 
 #[tauri::command]
 fn app_info(app: AppHandle, state: State<AppState>) -> Value {
+    info(&app, &state)
+}
+
+fn info(app: &AppHandle, state: &AppState) -> Value {
     json!({
         "version": app.package_info().version.to_string(),
         "serverPort": state.server_port,
@@ -391,6 +394,84 @@ fn app_open_releases(app: AppHandle) -> Result<(), String> {
     app.opener().open_url(RELEASES_PAGE, None::<&str>).map_err(|e| e.to_string())
 }
 
+// ── The Bug report tab ─────────────────────────────────────────────────────
+// The report is what was typed plus the app's own account of itself: version,
+// settings without passwords, the last weighings, the tail of the log. Filed
+// on GitHub, or saved to a file to send some other way when the PC has no
+// internet.
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+struct ReportArgs {
+    description: String,
+    repo: String,
+    token: String,
+}
+
+fn build_bug_report(app: &AppHandle, description: &str) -> bug_report::Report {
+    let state = app.state::<AppState>();
+    let log = fs::read_to_string(state.log_file()).unwrap_or_else(|_| state.log.lock().unwrap().iter().cloned().collect::<Vec<_>>().join("\n"));
+    let history: Vec<Value> =
+        state.history.lock().unwrap().as_ref().map(|h| h.list(bug_report::HISTORY_ENTRIES)).unwrap_or_default().into_iter().map(Value::Object).collect();
+    let scale = state.scale.lock().unwrap().as_ref().map(|s| serde_json::to_value(s.status()).unwrap_or_default());
+    let settings = state.settings.lock().unwrap().get().clone();
+    bug_report::build(&bug_report::Input {
+        description,
+        info: &info(app, &state),
+        settings: &settings,
+        log: &log,
+        history: &history,
+        scale: scale.as_ref(),
+        machine: bug_report::machine(),
+        now: chrono::Utc::now(),
+    })
+}
+
+#[tauri::command]
+async fn support_send(app: AppHandle, args: Option<ReportArgs>) -> Result<bug_report::Issue, String> {
+    let args = args.unwrap_or_default();
+    let report = build_bug_report(&app, &args.description);
+    let mut support = app.state::<AppState>().settings.lock().unwrap().get()["support"].clone();
+    if !args.repo.trim().is_empty() {
+        support["repo"] = args.repo.into();
+    }
+    if !args.token.trim().is_empty() {
+        support["githubToken"] = args.token.into();
+    }
+    let builtin_relay = settings::defaults()["support"]["relayUrl"].as_str().unwrap_or("").to_string();
+    let issue = bug_report::send(&*bug_report::http_post(), &support, &builtin_relay, &report.title, &report.body).await?;
+    log(&app, format!("bug report filed: {}", issue.url.as_deref().unwrap_or("?")));
+    Ok(issue)
+}
+
+#[tauri::command]
+async fn support_save(app: AppHandle, args: Option<ReportArgs>) -> Result<Option<String>, String> {
+    let report = build_bug_report(&app, &args.unwrap_or_default().description);
+    let stamp = chrono::Local::now().format("%Y-%m-%d-%H-%M-%S");
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app.dialog().file().set_title("Save the bug report").set_file_name(format!("scale-station-report-{stamp}.md")).add_filter("Markdown", &["md"]);
+    if let Ok(desktop) = app.path().desktop_dir() {
+        dialog = dialog.set_directory(desktop);
+    }
+    dialog.save_file(move |file| {
+        let _ = tx.send(file);
+    });
+    let Some(file) = rx.await.ok().flatten() else { return Ok(None) };
+    let path = file.into_path().map_err(|e| e.to_string())?;
+    fs::write(&path, format!("# {}\n\n{}", report.title, report.body)).map_err(|e| e.to_string())?;
+    Ok(Some(path.display().to_string()))
+}
+
+/// The link to a filed report; only GitHub's.
+#[tauri::command]
+fn support_open(app: AppHandle, args: Option<String>) -> Result<(), String> {
+    let url = args.unwrap_or_default();
+    if !url.starts_with("https://github.com/") {
+        return Ok(());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn log_recent(state: State<AppState>) -> Vec<String> {
     let lines = state.log.lock().unwrap();
@@ -477,7 +558,10 @@ pub fn run() {
             log_recent,
             log_write,
             app_copy,
-            app_open_releases
+            app_open_releases,
+            support_send,
+            support_save,
+            support_open
         ])
         .build(tauri::generate_context!())
         .expect("error while building the station")
