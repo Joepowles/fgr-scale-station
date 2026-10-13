@@ -9,6 +9,15 @@ Built from the same pieces as the scale camera card on falconworkorders.com:
 the scale frame parser, the vehicle detector, the plate reader and the camera
 streaming code are the Falcon backend's, copied in.
 
+## Two builds of one app
+
+From 0.2.0 the app is built in Rust on Tauri, in `rust/` (see its README);
+the Electron app here is 0.1.x, kept until every yard has moved over. Both
+show the same window (`src/renderer`), read the same release feed and write
+the same history, and the Rust app's installer takes the Electron app off a
+PC and carries on from its settings. Tags `v0.1.*` build the Electron app,
+newer ones the Rust app.
+
 ## What it does
 
 - **Camera** - finds cameras on the LAN over ONVIF, lists their streams, shows
@@ -29,8 +38,8 @@ streaming code are the Falcon backend's, copied in.
 
 ## Building the installer
 
-Done by `.github/workflows/release.yml` on a Windows runner when a `v*` tag is
-pushed: it fetches ffmpeg, builds the plate reader and fetches its models, packages with electron-builder and publishes the installer to the
+Done by `.github/workflows/release.yml` on a Windows runner when a `v0.1.*` tag is
+pushed (newer tags build `rust/`): it fetches ffmpeg, builds the plate reader and fetches its models, packages with electron-builder and publishes the installer to the
 GitHub release. The installed app auto-updates from those releases.
 
 To build by hand on a Windows machine:
