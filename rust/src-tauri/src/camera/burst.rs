@@ -7,8 +7,8 @@
 //! decoding instead, writing a JPEG every so often, and hands out the newest
 //! one. Dropping the feed stops ffmpeg.
 //!
-//! Frames decoded before the first keyframe can be grey smears; those simply
-//! hold no plate, so they are never chosen as the photo.
+//! Frames decoded before the first keyframe would be grey smears; they are
+//! filtered out (stream::FROM_FIRST_KEYFRAME).
 
 use std::time::Duration;
 
@@ -59,7 +59,9 @@ pub struct Burst {
 impl Burst {
     /// Starts ffmpeg on `url` (login included), writing `fps` frames a second.
     pub fn start(url: &str, fps: f64) -> Result<Self, String> {
-        let rate = format!("fps={fps}");
+        // From the first keyframe on: a gray smear could otherwise be kept
+        // as a truck's photo when no plate is read.
+        let rate = format!("{},fps={fps}", super::stream::FROM_FIRST_KEYFRAME);
         // One flag and its value per line.
         #[rustfmt::skip]
         let args = [

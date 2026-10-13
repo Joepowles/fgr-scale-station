@@ -43,7 +43,6 @@ export const viewForBox = (box, w, h) => {
 // because a stalled MediaSource never recovers on its own.
 export default function CameraView({ settings, info, scale, display }) {
   const [tick, setTick] = useState(0);
-  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
   const [hd, setHd] = useState(false);
   // Zoom (issue #10): wheel to zoom about the pointer, drag a box to zoom
@@ -58,6 +57,35 @@ export default function CameraView({ settings, info, scale, display }) {
   const hasHd = !!settings.camera.hdStreamUrl && settings.camera.hdStreamUrl !== settings.camera.streamUrl;
   const showHd = hd || (hasHd && zoomHd);
   const src = `http://127.0.0.1:${info.serverPort}/stream?hd=${showHd ? 1 : 0}&t=${tick}`;
+
+  // A new stream (HD on or off, a reconnect) opens in a second player behind
+  // the one showing, which stays until the new one is playing: the picture
+  // never goes black while the camera is connected to afresh. Oldest first;
+  // the last is the stream wanted now.
+  const [players, setPlayers] = useState([src]);
+  const [shown, setShown] = useState(null);
+  const wanted = useRef(src);
+  wanted.current = src;
+  useEffect(() => {
+    // The one showing is kept, and only the newest of those still opening.
+    setPlayers((list) => (list[list.length - 1] === src ? list : [...list.filter((p) => p === shown), src]));
+  }, [src, shown]);
+  const onReady = (playerSrc) => {
+    setShown(playerSrc);
+    setError('');
+    clearTimeout(retry.current);
+    setPlayers((list) => list.slice(Math.max(0, list.indexOf(playerSrc))));
+  };
+  // Trouble only counts from the stream wanted now; an older one is on its way out.
+  const onTrouble = (playerSrc, kind) => {
+    if (playerSrc !== wanted.current) return;
+    clearTimeout(retry.current);
+    if (kind === 'lag') return setTick((t) => t + 1);
+    if (kind === 'error') setError(info.ffmpeg ? 'Camera not responding' : 'ffmpeg is missing from this build');
+    retry.current = setTimeout(() => setTick((t) => t + 1), kind === 'error' ? 5000 : 8000);
+  };
+  useEffect(() => () => clearTimeout(retry.current), []);
+  const loaded = shown !== null && players.includes(shown);
 
   useEffect(() => {
     const t = setTimeout(() => setZoomHd(view.s >= HD_FROM_ZOOM), HD_SWITCH_DELAY_MS);
@@ -104,47 +132,6 @@ export default function CameraView({ settings, info, scale, display }) {
   };
   const onContextMenu = (e) => { e.preventDefault(); setDrag(null); setView(WHOLE); };
 
-  useEffect(() => {
-    setLoaded(false);
-    setError('');
-    const v = videoRef.current;
-    if (!v) return undefined;
-    v.muted = true;
-    v.play().catch(() => {});
-    const onPlaying = () => { setLoaded(true); setError(''); };
-    const onError = () => {
-      setError(info.ffmpeg ? 'Camera not responding' : 'ffmpeg is missing from this build');
-      clearTimeout(retry.current);
-      retry.current = setTimeout(() => setTick((t) => t + 1), 5000);
-    };
-    const onStalled = () => { clearTimeout(retry.current); retry.current = setTimeout(() => setTick((t) => t + 1), 8000); };
-    // The player shows every frame it is handed at normal speed, so each
-    // stall (a busy CPU, a retransmit) adds delay that is never made up and
-    // the picture falls further behind the yard. Play a little fast while
-    // behind; past saving, reconnect, which starts at the newest keyframe.
-    // Taken out in beta.7 in the belief it made the picture gray; that was
-    // the camera's undetected frame rate (issue #8).
-    const catchUp = setInterval(() => {
-      if (!v.buffered.length || v.paused) return;
-      const lag = v.buffered.end(v.buffered.length - 1) - v.currentTime;
-      if (lag > MAX_LAG_S) setTick((t) => t + 1);
-      else if (lag > CATCH_UP_LAG_S) v.playbackRate = 1.5;
-      else if (lag < ON_TIME_LAG_S) v.playbackRate = 1;
-    }, 500);
-    v.addEventListener('playing', onPlaying);
-    v.addEventListener('error', onError);
-    v.addEventListener('stalled', onStalled);
-    v.addEventListener('ended', onError);
-    return () => {
-      v.removeEventListener('playing', onPlaying);
-      v.removeEventListener('error', onError);
-      v.removeEventListener('stalled', onStalled);
-      v.removeEventListener('ended', onError);
-      clearTimeout(retry.current);
-      clearInterval(catchUp);
-    };
-  }, [src, info.ffmpeg]);
-
   // What the player is showing, into the station log once a minute, so a bug
   // report says whether a bad picture is the stream or the player.
   useEffect(() => {
@@ -185,8 +172,10 @@ export default function CameraView({ settings, info, scale, display }) {
   return (
     <div ref={boxRef} className={`absolute inset-0 bg-black overflow-hidden ${drag ? 'cursor-crosshair' : view.s > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in'}`}
       onWheel={onWheel} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp} onContextMenu={onContextMenu}>
-      <video key={src} ref={videoRef} src={src} autoPlay muted playsInline className="absolute inset-0 w-full h-full object-contain origin-top-left"
-        style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.s})` }} />
+      {players.map((p) => (
+        <Player key={p} src={p} visible={p === shown} playerRef={videoRef} onReady={onReady} onTrouble={onTrouble}
+          style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.s})` }} />
+      ))}
       {drag && (
         <div className="absolute border-2 border-dashed border-white bg-white/10 pointer-events-none"
           style={{ left: Math.min(drag.x1, drag.x2), top: Math.min(drag.y1, drag.y2), width: Math.abs(drag.x2 - drag.x1), height: Math.abs(drag.y2 - drag.y1) }} />
@@ -196,7 +185,7 @@ export default function CameraView({ settings, info, scale, display }) {
           {view.s.toFixed(1)}×{showHd ? ' · HD' : ''} · right-click for the whole picture
         </div>
       )}
-      {!loaded && (
+      {(!loaded || error) && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 pointer-events-none">
           <div className="w-8 h-8 border-2 border-gray-600 border-t-gray-200 rounded-full animate-spin" />
           <p className="text-gray-400 text-sm">{error || 'Connecting to camera…'}</p>
@@ -221,6 +210,54 @@ export default function CameraView({ settings, info, scale, display }) {
         <button type="button" onClick={() => { setHd((v) => !v); setTick((t) => t + 1); }} className={`absolute bottom-3 left-1/2 -translate-x-1/2 px-2 py-0.5 text-[11px] rounded border opacity-40 hover:opacity-100 ${hd ? 'bg-white text-black border-white' : 'bg-black/60 text-gray-200 border-gray-500'}`} title="Switch between the small stream and the full-resolution one">HD</button>
       )}
     </div>
+  );
+}
+
+// One stream in a <video>, its own player. Says when it is playing, and when
+// it is in trouble: an error, a stall, or falling too far behind the yard.
+function Player({ src, visible, style, playerRef, onReady, onTrouble }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const v = ref.current;
+    if (!v) return undefined;
+    v.muted = true;
+    v.play().catch(() => {});
+    const onPlaying = () => onReady(src);
+    const onError = () => onTrouble(src, 'error');
+    const onStalled = () => onTrouble(src, 'stalled');
+    // The player shows every frame it is handed at normal speed, so each
+    // stall (a busy CPU, a retransmit) adds delay that is never made up and
+    // the picture falls further behind the yard. Play a little fast while
+    // behind; past saving, reconnect, which starts at the newest keyframe.
+    // Taken out in beta.7 in the belief it made the picture gray; that was
+    // the camera's undetected frame rate (issue #8).
+    const catchUp = setInterval(() => {
+      if (!v.buffered.length || v.paused) return;
+      const lag = v.buffered.end(v.buffered.length - 1) - v.currentTime;
+      if (lag > MAX_LAG_S) onTrouble(src, 'lag');
+      else if (lag > CATCH_UP_LAG_S) v.playbackRate = 1.5;
+      else if (lag < ON_TIME_LAG_S) v.playbackRate = 1;
+    }, 500);
+    v.addEventListener('playing', onPlaying);
+    v.addEventListener('error', onError);
+    v.addEventListener('stalled', onStalled);
+    v.addEventListener('ended', onError);
+    return () => {
+      v.removeEventListener('playing', onPlaying);
+      v.removeEventListener('error', onError);
+      v.removeEventListener('stalled', onStalled);
+      v.removeEventListener('ended', onError);
+      clearInterval(catchUp);
+      // Let go of the stream now, not when the element is collected.
+      v.removeAttribute('src');
+      v.load();
+    };
+  // Once per stream: the callbacks change every render, the stream does not.
+  }, [src]);
+  useEffect(() => { if (visible) playerRef.current = ref.current; }, [visible, playerRef]);
+  return (
+    <video ref={ref} src={src} autoPlay muted playsInline style={style}
+      className={`absolute inset-0 w-full h-full object-contain origin-top-left ${visible ? '' : 'opacity-0'}`} />
   );
 }
 

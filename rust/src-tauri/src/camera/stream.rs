@@ -60,6 +60,10 @@ const FULL_LINES_PER_CONNECTION: usize = 40;
 
 pub type Log = Arc<dyn Fn(String) + Send + Sync>;
 
+/// An ffmpeg filter passing nothing before the input's first keyframe, and
+/// everything from it on.
+pub const FROM_FIRST_KEYFRAME: &str = "select='key+not(isnan(prev_selected_t))'";
+
 /// Cuts a byte stream into whole MP4 boxes, however the chunks fall.
 #[derive(Default)]
 pub struct BoxSplitter {
@@ -291,6 +295,11 @@ async fn run_ffmpeg(camera: &Camera, url: &str, log: &Log) -> Ended {
         // cannot, it takes 90k fps, and libx264 shares the bitrate out over
         // 90,000 frames a second: a gray blocky picture that only the moving
         // parts redraw (issue #8). 15 fps is plenty for a scale.
+        // Nothing until the camera's first keyframe: joining its stream
+        // between keyframes, the frames decoded before one are gray smears
+        // of whatever moved, and a new viewer (the HD switch while zoomed)
+        // was shown them. Every frame after it passes.
+        "-vf", FROM_FIRST_KEYFRAME,
         "-fps_mode", "cfr",
         "-r", &fps,
         "-f", "mp4",
