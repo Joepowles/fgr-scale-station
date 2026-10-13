@@ -31,7 +31,12 @@ pub fn defaults() -> Value {
             "overlayCorner": "top-left",
             "retryAttempts": 10,
             "retrySeconds": 3,
-            "stampPhoto": true
+            "stampPhoto": true,
+            "requireDigit": true,
+            "ignoreWords": "",
+            "pick": "largest",
+            "favorSide": "right",
+            "favorPercent": 50
         },
         "scale": {
             "enabled": false,
@@ -60,6 +65,9 @@ pub fn defaults() -> Value {
             "fullscreen": false,
             "alwaysOnTop": false,
             "startWithWindows": false
+        },
+        "updates": {
+            "channel": "stable"
         },
         "support": {
             "relayUrl": "https://scale-station-reports.joepowles.workers.dev",

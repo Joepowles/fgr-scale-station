@@ -10,6 +10,7 @@
 mod camera;
 mod history;
 mod pipeline;
+mod plate_choice;
 mod plates;
 mod scale;
 mod server;
@@ -212,7 +213,7 @@ fn app_info(app: AppHandle, state: State<AppState>) -> Value {
 
 #[tauri::command]
 fn app_changelog() -> &'static str {
-    include_str!("../../CHANGELOG.md")
+    include_str!("../../../CHANGELOG.md")
 }
 
 #[tauri::command]

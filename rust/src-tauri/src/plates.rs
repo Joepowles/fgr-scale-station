@@ -1,12 +1,8 @@
-//! Licence plate reading, done by a Python helper kept running in the
-//! background (resources/python-worker/plate_reader_worker.py).
-//!
-//! The models are the open ones from the fast-alpr project: a small YOLO
-//! that finds plates and a character reader for the crop. They run on the CPU
-//! in well under a second. They stay in Python for now because the project
-//! ships preprocessing and decoding that would otherwise have to be
-//! reproduced exactly; reading them from Rust with `ort` is the next
-//! experiment, once there are yard photos to check it against.
+//! Licence plate reading, done by a helper kept running in the background:
+//! plate-reader(.exe), built from plate-reader/ in the repository, which
+//! runs fast-alpr's two open models (a YOLO that finds plates and a
+//! character reader for the crop) on ONNX Runtime. The Electron app drives
+//! the same helper.
 //!
 //! The helper speaks JSON lines: one request per line on its stdin
 //! ({"id": 1, "path": "frame.jpg"}), one reply per line on its stdout. It is
@@ -26,13 +22,13 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::oneshot;
 use tokio::time::{timeout, Instant};
 
-const START_TIMEOUT: Duration = Duration::from_secs(90); // a first run may download the models
+const START_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const RESTART_BACKOFF: Duration = Duration::from_secs(30);
 // Noise from onnxruntime inside an LXC container: it tries to pin its
 // threads to cores and the container forbids it. Harmless, and it says so
 // eight times per model.
-const IGNORED_STDERR: [&str; 3] = ["pthread_setaffinity_np", "Downloading ", "INFO:"];
+const IGNORED_STDERR: [&str; 1] = ["pthread_setaffinity_np"];
 
 /// One plate found in a picture. The box is in pixels of the picture given.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -58,28 +54,22 @@ struct Reply {
     error: Option<String>,
 }
 
-/// Where the reader's Python and script are.
+/// Where the helper and its models are.
 #[derive(Debug, Clone)]
 pub struct Paths {
-    pub python: PathBuf,
-    pub script: PathBuf,
-    /// The embedded Python's home, holding the pre-downloaded models; when
-    /// present the worker is pointed at it and kept offline.
-    pub home: Option<PathBuf>,
+    pub exe: PathBuf,
+    pub models: PathBuf,
 }
 
 impl Paths {
-    /// The installed layout under the app's resources: python/ (Windows
-    /// builds only, see scripts) and python-worker/. PLATE_READER_PYTHON
-    /// overrides the Python, for development against a venv.
+    /// The installed layout under the app's resources: bin/plate-reader(.exe)
+    /// and plate-models/. PLATE_READER_EXE and PLATE_READER_MODELS point at
+    /// another build, for development (see the README).
     pub fn under(resources: &std::path::Path) -> Self {
-        let python_dir = resources.join("python");
-        let bundled = if cfg!(windows) { python_dir.join("python.exe") } else { python_dir.join("bin").join("python") };
-        let home = python_dir.join("home");
+        let exe = if cfg!(windows) { "plate-reader.exe" } else { "plate-reader" };
         Self {
-            python: std::env::var_os("PLATE_READER_PYTHON").map(PathBuf::from).unwrap_or(bundled),
-            script: resources.join("python-worker").join("plate_reader_worker.py"),
-            home: home.is_dir().then_some(home),
+            exe: std::env::var_os("PLATE_READER_EXE").map(PathBuf::from).unwrap_or_else(|| resources.join("bin").join(exe)),
+            models: std::env::var_os("PLATE_READER_MODELS").map(PathBuf::from).unwrap_or_else(|| resources.join("plate-models")),
         }
     }
 }
@@ -88,7 +78,7 @@ impl Paths {
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub installed: bool,
-    pub python: String,
+    pub reader: String,
     pub running: bool,
     pub last_error: String,
 }
@@ -129,14 +119,14 @@ impl PlateReader {
     }
 
     pub fn installed(&self) -> bool {
-        self.paths.python.is_file() && self.paths.script.is_file()
+        self.paths.exe.is_file() && self.paths.models.is_dir()
     }
 
     pub fn status(&self) -> Status {
         let health = self.health.lock().unwrap();
         // Locked means starting, which is not running yet.
         let running = self.worker.try_lock().map(|w| w.is_some() && !health.exited).unwrap_or(false);
-        Status { installed: self.installed(), python: self.paths.python.display().to_string(), running, last_error: health.last_error.clone() }
+        Status { installed: self.installed(), reader: self.paths.exe.display().to_string(), running, last_error: health.last_error.clone() }
     }
 
     fn fail(&self, message: String) -> String {
@@ -156,7 +146,7 @@ impl PlateReader {
             *slot = None; // exited; dropping it reaps the process
         }
         if !self.installed() {
-            return Err(self.fail(format!("plate reader not installed (no Python at {})", self.paths.python.display())));
+            return Err(self.fail(format!("plate reader not installed (nothing at {})", self.paths.exe.display())));
         }
         {
             let health = self.health.lock().unwrap();
@@ -176,18 +166,8 @@ impl PlateReader {
 
     async fn start(&self) -> Result<Worker, String> {
         let started = Instant::now();
-        let mut cmd = Command::new(&self.paths.python);
-        cmd.arg(&self.paths.script)
-            .env("PYTHONIOENCODING", "utf-8")
-            .env("PYTHONUTF8", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        if let Some(home) = &self.paths.home {
-            // fast-alpr looks for its models under ~/.cache.
-            cmd.env("USERPROFILE", home).env("HOME", home).env("HF_HUB_OFFLINE", "1");
-        }
+        let mut cmd = Command::new(&self.paths.exe);
+        cmd.arg("--models").arg(&self.paths.models).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         #[cfg(windows)]
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         let mut child = cmd.spawn().map_err(|e| format!("plate reader could not be started: {e}"))?;
@@ -285,16 +265,17 @@ impl PlateReader {
     }
 }
 
-// Against the real helper in a venv, so only on request:
-//   python3 -m venv .venv-plates && .venv-plates/bin/pip install fast-alpr onnxruntime
+// Against the real helper, so only on request. From the repository root,
+// after node scripts/build-plate-reader.js (and on Linux an ONNX Runtime,
+// such as the one onnxruntime-node ships):
+//   ORT_DYLIB_PATH=$PWD/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime.so.1 \
 //   PLATE_SAMPLE=photo-with-a-plate.jpg cargo test plate_reader -- --ignored --nocapture
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn reader() -> PlateReader {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        let paths = Paths { python: root.join(".venv-plates/bin/python"), script: root.join("resources/python-worker/plate_reader_worker.py"), home: None };
+        let paths = Paths::under(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources"));
         PlateReader::new(paths, Arc::new(|line| println!("{line}")))
     }
 
@@ -308,8 +289,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_missing_python_says_so_without_trying() {
-        let r = PlateReader::new(Paths { python: "/nowhere/python".into(), script: "/nowhere/w.py".into(), home: None }, Arc::new(|_| {}));
+    async fn a_missing_reader_says_so_without_trying() {
+        let r = PlateReader::new(Paths { exe: "/nowhere/plate-reader".into(), models: "/nowhere/models".into() }, Arc::new(|_| {}));
         let err = r.read(b"jpeg").await.unwrap_err();
         assert!(err.contains("not installed"), "{err}");
         assert!(!r.status().installed);

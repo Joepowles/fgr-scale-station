@@ -39,6 +39,34 @@ export default function PlatesTab({ draft, patch, info }) {
             <input className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm mt-1 mono" value={p.ignoreWords || ''} onChange={(e) => patch('plates', { ignoreWords: e.target.value })} placeholder="RUBLE, KENWORTH" />
             <span className="text-[11px] text-gray-500">Signage the reader keeps picking up, separated by commas. The same text found twice in one picture is ignored on its own.</span>
           </label>
+          {/* The Rust app reads the whole frame and chooses among the plates
+              in it; the Electron app reads the biggest vehicle's instead, and
+              has no such settings. */}
+          {p.pick !== undefined && (
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block text-xs text-gray-400">With more than one plate in view, take
+                  <select className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm text-gray-100 mt-1" value={p.pick} onChange={(e) => patch('plates', { pick: e.target.value })}>
+                    <option value="largest">The largest plate</option>
+                    <option value="confident">The clearest read</option>
+                  </select>
+                </label>
+                <label className="block text-xs text-gray-400">Favour plates toward
+                  <select className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm text-gray-100 mt-1" value={p.favorSide || 'none'} onChange={(e) => patch('plates', { favorSide: e.target.value })}>
+                    <option value="right">The right of the picture</option>
+                    <option value="left">The left of the picture</option>
+                    <option value="none">Neither side</option>
+                  </select>
+                </label>
+              </div>
+              {p.favorSide !== 'none' && (
+                <label className="block text-xs text-gray-400">By up to <span className="text-gray-200">{Math.round(p.favorPercent ?? 50)}%</span>
+                  <input type="range" min={0} max={200} step={5} value={Math.round(p.favorPercent ?? 50)} onChange={(e) => patch('plates', { favorPercent: Number(e.target.value) })} className="w-full" />
+                </label>
+              )}
+              <p className="text-[11px] text-gray-500">The truck on the scale is nearest the camera, so its plate is the largest; a truck parked across the yard has a smaller one. A plate at the {p.favorSide === 'left' ? 'left' : 'right'} edge counts as that much {p.pick === 'confident' ? 'clearer' : 'larger'} than one at the other edge.</p>
+            </div>
+          )}
           <label className="flex items-center gap-2 text-xs text-gray-300"><input type="checkbox" checked={p.stampPhoto !== false} onChange={(e) => patch('plates', { stampPhoto: e.target.checked })} /> Stamp the plate on the saved photo</label>
           <div className="text-xs text-gray-400">Corner of the picture for the plate
             <div className="grid grid-cols-2 gap-1.5 mt-1 max-w-xs">
@@ -51,7 +79,7 @@ export default function PlatesTab({ draft, patch, info }) {
         <div className="space-y-3">
           <h3 className="text-sm font-semibold">Try it</h3>
           <button type="button" onClick={readNow} disabled={reading || !draft.camera.streamUrl} className={btn}>{reading ? 'Reading…' : '🔎 Read a plate now'}</button>
-          <p className="text-[11px] text-gray-500">Grabs a frame, finds the biggest vehicle in it and reads its plate from the full-resolution stream. Takes a few seconds. Uses the saved camera settings.</p>
+          <p className="text-[11px] text-gray-500">{p.pick !== undefined ? 'Grabs a frame from the full-resolution stream and reads the plate the settings here would take.' : 'Grabs a frame, finds the biggest vehicle in it and reads its plate from the full-resolution stream.'} Takes a few seconds. Uses the saved camera settings.</p>
           {result && (
             <p className={`text-xs ${result.plate ? 'text-emerald-300' : 'text-amber-300'}`}>
               {result.plate ? <>Read <span className="mono font-bold">{result.plate.text}</span> at {Math.round(result.plate.confidence * 100)}% in {(result.ms / 1000).toFixed(1)} s (frame {result.plate.frameWidth}×{result.plate.frameHeight})</> : `✗ ${result.error}`}

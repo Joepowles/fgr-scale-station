@@ -40,7 +40,8 @@
       "binaries/ffmpeg"
     ],
     "resources": {
-      "../resources/python-worker/plate_reader_worker.py": "python-worker/plate_reader_worker.py"
+      "../../resources/bin/plate-reader": "bin/plate-reader",
+      "../../resources/plate-models/": "plate-models/"
     }
   }
 }

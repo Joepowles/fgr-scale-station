@@ -6,5 +6,3 @@ src-tauri/gen/
 Thumbs.db
 *.log
 src-tauri/binaries/
-.venv-plates/
-resources/python/

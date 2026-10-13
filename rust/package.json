@@ -9,7 +9,7 @@
     "build": "vite build",
     "tauri": "tauri",
     "fetch:ffmpeg": "node scripts/fetch-ffmpeg.cjs",
-    "build:python": "node scripts/build-python.cjs"
+    "build:plate-reader": "node ../scripts/build-plate-reader.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2"

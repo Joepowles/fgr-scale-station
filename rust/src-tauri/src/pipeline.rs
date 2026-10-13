@@ -7,7 +7,9 @@
 //! kept.
 //!
 //! Unlike the Electron app there is no vehicle detector: the scale is what
-//! says a truck is there, and fast-alpr finds the plate in the whole frame.
+//! says a truck is there, the reader finds every plate in the whole frame,
+//! and plate_choice picks the truck's (the biggest, toward the side the
+//! settings favour) from among them.
 //!
 //! The scale's events arrive on a channel. Each weighing then runs as a task
 //! of its own, so a reweigh or a cleared deck is heard while the photo is
@@ -22,6 +24,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
 use crate::camera::{self, CameraSettings};
+use crate::plate_choice::{self, Rules};
 use crate::history::{weight_value, Entry, NewEvent};
 use crate::scale::frames::format_weight;
 use crate::scale::reader::Weighing;
@@ -161,7 +164,7 @@ impl Pipeline {
 
     /// One read of the plate off the HD stream. True when it found a better
     /// one than `current` had.
-    async fn try_plate(&self, current: &Shared, camera: &CameraSettings, min_confidence: f64, attempt: u32) -> bool {
+    async fn try_plate(&self, current: &Shared, camera: &CameraSettings, rules: &Rules, attempt: u32) -> bool {
         let state = self.app.state::<AppState>();
         let Some(hd_url) = camera.url(true) else { return false };
         let hd = match camera::snapshot::capture(&hd_url, "", "", HD_TIMEOUT).await {
@@ -171,22 +174,22 @@ impl Pipeline {
                 return false;
             }
         };
-        let read = match state.plates.read(&hd).await {
-            Ok(plates) => plates.into_iter().next(),
+        let width = camera::snapshot::jpeg_size(&hd).map_or(0.0, |(w, _)| f64::from(w));
+        let choice = match state.plates.read(&hd).await {
+            Ok(plates) => plate_choice::choose(&plates, width, rules),
             Err(err) => {
                 self.log(format!("plate read failed: {err}"));
                 return false;
             }
         };
-        let Some(read) = read else {
-            self.log(format!("no plate found (attempt {attempt})"));
+        let Some(read) = choice.plate else {
+            match choice.under_floor {
+                Some(weak) => self.log(format!("plate \"{}\" at {}%, under the floor (attempt {attempt})", weak.text, (weak.confidence * 100.0).round())),
+                None => self.log(format!("no plate found (attempt {attempt})")),
+            }
             return false;
         };
         let percent = (read.confidence * 100.0).round();
-        if read.confidence < min_confidence {
-            self.log(format!("plate \"{}\" at {percent}%, under the floor (attempt {attempt})", read.text));
-            return false;
-        }
         let better = current.lock().unwrap().plate.as_ref().is_none_or(|p| read.confidence > p["confidence"].as_f64().unwrap_or(0.0));
         if !better {
             return false;
@@ -244,9 +247,9 @@ impl Pipeline {
                 let taken_at = Local::now();
                 current.lock().unwrap().frame = Some((frame.clone(), taken_at));
                 let want_plate = s["plates"]["enabled"] != false && s["scale"]["readPlate"] != false;
-                let min_confidence = s["plates"]["minConfidence"].as_f64().unwrap_or(0.6);
+                let rules: Rules = serde_json::from_value(s["plates"].clone()).unwrap_or_default();
                 if want_plate {
-                    self.try_plate(&current, &camera, min_confidence, 1).await;
+                    self.try_plate(&current, &camera, &rules, 1).await;
                 }
                 let plate = current.lock().unwrap().plate.clone();
                 let photo = self.stamp(&frame, taken_at, &weight_text, plate.as_ref());
@@ -268,7 +271,7 @@ impl Pipeline {
                         if !self.truck_on_deck() || !self.is_current(&current) {
                             break; // the deck cleared, or another truck is being weighed
                         }
-                        if self.try_plate(&current, &camera, min_confidence, attempt).await {
+                        if self.try_plate(&current, &camera, &rules, attempt).await {
                             let plate = current.lock().unwrap().plate.clone();
                             self.update(&entry_id, object(json!({ "plate": plate })), None);
                         }
@@ -328,11 +331,18 @@ pub async fn read_plate_now(app: &AppHandle) -> Result<Value, String> {
     let frame = camera::snapshot::capture(&url, "", "", PHOTO_TIMEOUT).await?;
     let hd = if hd_url == url { frame.clone() } else { camera::snapshot::capture(&hd_url, "", "", HD_TIMEOUT).await? };
     let (frame_width, frame_height) = camera::snapshot::jpeg_size(&hd).unwrap_or((0, 0));
-    let best = state.plates.read(&hd).await?.into_iter().next();
-    let plate =
-        best.map(|p| json!({ "text": p.text, "confidence": (p.confidence * 100.0).round() / 100.0, "frameWidth": frame_width, "frameHeight": frame_height }));
+    let rules: Rules = state.settings.lock().unwrap().section("plates");
+    let choice = plate_choice::choose(&state.plates.read(&hd).await?, f64::from(frame_width), &rules);
+    let plate = choice
+        .plate
+        .map(|p| json!({ "text": p.text, "confidence": (p.confidence * 100.0).round() / 100.0, "frameWidth": frame_width, "frameHeight": frame_height }));
+    let error = match (&plate, &choice.under_floor) {
+        (Some(_), _) => String::new(),
+        (None, Some(weak)) => format!("Only \"{}\" at {}%, under the minimum confidence.", weak.text, (weak.confidence * 100.0).round()),
+        (None, None) => "No plate found in this frame.".into(),
+    };
     Ok(json!({
-        "error": if plate.is_some() { "" } else { "No plate found in this frame." },
+        "error": error,
         "plate": plate,
         "image": format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(&frame)),
         "ms": started.elapsed().as_millis() as u64,
