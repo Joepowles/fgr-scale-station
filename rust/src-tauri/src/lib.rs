@@ -16,6 +16,7 @@ mod scale;
 mod server;
 mod settings;
 mod stamp;
+mod window_state;
 
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
@@ -24,7 +25,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri_plugin_autostart::ManagerExt as _;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::mpsc::UnboundedSender;
@@ -36,6 +39,7 @@ use scale::reader::{self, ScaleEvent, ScaleReader, ScaleSettings, ScaleStatus, T
 use settings::SettingsStore;
 
 const LOG_LINES_KEPT: usize = 500;
+const RELEASES_PAGE: &str = "https://github.com/Joepowles/fgr-scale-station/releases";
 // The log also goes to station.log beside the settings file, so what the
 // scale did on a day can be read back on the yard PC afterwards. Kept to
 // about 2 MB: the older half is dropped when it grows past that.
@@ -192,6 +196,15 @@ fn apply_settings(app: &AppHandle) {
         let fullscreen = window["fullscreen"].as_bool().unwrap_or(false);
         if win.is_fullscreen().ok() != Some(fullscreen) {
             let _ = win.set_fullscreen(fullscreen);
+        }
+    }
+    // Start with Windows: a Run entry for this user, as Electron's login item.
+    let start_with_windows = window["startWithWindows"].as_bool().unwrap_or(false);
+    let autolaunch = app.autolaunch();
+    if autolaunch.is_enabled().ok() != Some(start_with_windows) {
+        let result = if start_with_windows { autolaunch.enable() } else { autolaunch.disable() };
+        if let Err(err) = result {
+            log(app, format!("could not change starting with Windows: {err}"));
         }
     }
 }
@@ -353,6 +366,31 @@ async fn history_choose_folder(app: AppHandle) -> Option<String> {
     rx.await.ok().flatten().map(|f| f.to_string())
 }
 
+/// The Reconnect button over the live view.
+#[tauri::command]
+fn camera_reconnect(state: State<AppState>) -> bool {
+    state.streams.reconnect();
+    true
+}
+
+/// The window's own reports, such as what the live view is showing.
+#[tauri::command]
+fn log_write(app: AppHandle, args: Option<String>) -> bool {
+    log(&app, args.unwrap_or_default().chars().take(500).collect::<String>());
+    true
+}
+
+#[tauri::command]
+fn app_copy(app: AppHandle, args: Option<String>) -> Result<bool, String> {
+    app.clipboard().write_text(args.unwrap_or_default()).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn app_open_releases(app: AppHandle) -> Result<(), String> {
+    app.opener().open_url(RELEASES_PAGE, None::<&str>).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn log_recent(state: State<AppState>) -> Vec<String> {
     let lines = state.log.lock().unwrap();
@@ -362,11 +400,24 @@ fn log_recent(state: State<AppState>) -> Vec<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // One copy at a time, registered first as the plugin asks. A second
+        // copy reads the same scale, so every truck was weighed and logged
+        // twice (issue #5); opening the app again brings the window forward.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.unminimize();
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
+            let data_dir_for_window = data_dir.clone();
             let handle = app.handle().clone();
             let log_handle = handle.clone();
             let logger: camera::stream::Log = std::sync::Arc::new(move |line| log(&log_handle, line));
@@ -383,6 +434,21 @@ pub fn run() {
                 pipeline: pipeline::start(handle.clone()),
                 log: Mutex::new(VecDeque::new()),
             });
+            if let Some(win) = app.get_webview_window("main") {
+                window_state::restore(&win, &data_dir_for_window);
+                window_state::track(&win, &data_dir_for_window);
+                // The header's full-screen button follows F11 and the like.
+                let (events, handle) = (win.clone(), handle.clone());
+                let full = std::sync::atomic::AtomicBool::new(win.is_fullscreen().unwrap_or(false));
+                win.on_window_event(move |event| {
+                    if let WindowEvent::Resized(_) = event {
+                        let now = events.is_fullscreen().unwrap_or(false);
+                        if full.swap(now, std::sync::atomic::Ordering::SeqCst) != now {
+                            let _ = handle.emit("window:fullscreen", now);
+                        }
+                    }
+                });
+            }
             apply_settings(&handle);
             prune_history_hourly(handle.clone());
             log(&handle, format!("station {} started (Rust)", app.package_info().version));
@@ -400,6 +466,7 @@ pub fn run() {
             camera_discover,
             camera_streams,
             camera_snapshot_test,
+            camera_reconnect,
             plates_read_now,
             plates_status,
             history_list,
@@ -407,7 +474,10 @@ pub fn run() {
             history_prune,
             history_open_folder,
             history_choose_folder,
-            log_recent
+            log_recent,
+            log_write,
+            app_copy,
+            app_open_releases
         ])
         .build(tauri::generate_context!())
         .expect("error while building the station")
