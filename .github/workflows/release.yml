@@ -42,6 +42,8 @@ jobs:
       - run: npm test
       - run: node scripts/make-icon.js
       - run: node scripts/fetch-ffmpeg.js
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # The runner image has Rust; ort needs 1.88 or newer.
       - run: rustup update stable --no-self-update
       - run: node scripts/build-plate-reader.js
@@ -109,6 +111,8 @@ jobs:
         working-directory: rust
       - run: node scripts/fetch-ffmpeg.cjs
         working-directory: rust
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # The plate reader and its models, as the Electron app bundles them.
       - run: node scripts/build-plate-reader.js
       # After the two above: Tauri's build script wants every bundled file there.

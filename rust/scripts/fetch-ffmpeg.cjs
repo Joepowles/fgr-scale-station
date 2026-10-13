@@ -10,8 +10,8 @@ const path = require('path');
 const https = require('https');
 const { execSync } = require('child_process');
 
-const FFMPEG_WIN_URL = process.env.FFMPEG_WIN_URL
-  || 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip';
+// Shared with the Electron app's script: BtbN's latest, or the newest dated build.
+const { downloadFfmpeg } = require('../../scripts/ffmpeg-source');
 const triple = process.argv[2] || execSync('rustc -vV', { encoding: 'utf8' }).match(/^host: (.+)$/m)[1].trim();
 const windows = triple.includes('windows');
 const dest = path.join(__dirname, '..', 'src-tauri', 'binaries');
@@ -55,8 +55,7 @@ const findFile = (dir, name) => {
   }
   const zipPath = path.join(dest, 'ffmpeg.zip');
   const extractDir = path.join(dest, 'extract');
-  console.log(`Downloading ${FFMPEG_WIN_URL} ...`);
-  await download(FFMPEG_WIN_URL, zipPath);
+  await downloadFfmpeg(download, zipPath);
   fs.rmSync(extractDir, { recursive: true, force: true });
   if (process.platform === 'win32') {
     execSync(`powershell -NoProfile -Command "Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${extractDir}' -Force"`, { stdio: 'inherit' });
