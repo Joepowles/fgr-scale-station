@@ -104,7 +104,7 @@ class WeighingPipeline {
     let result = current.result;
     let capturedAt = current.capturedAt;
     try {
-      frame = await captureRtspSnapshot(s.camera.streamUrl, s.camera.username, s.camera.password, 10000);
+      frame = await captureRtspSnapshot(s.camera.hdStreamUrl || s.camera.streamUrl, s.camera.username, s.camera.password, 12000);
       capturedAt = new Date();
       result = { width: 0, height: 0, detections: [] };
       try { result = await detector.detect(frame, { minConfidence: 0.25 }); } catch (err) { this.log(`vehicle detection failed: ${err.message}`); }
@@ -158,14 +158,15 @@ class WeighingPipeline {
     try {
       const weightText = formatWeight(weighing.weight, weighing.unit);
       this.log(`${weightText} on the scale - photographing`);
-      const frame = await captureRtspSnapshot(s.camera.streamUrl, s.camera.username, s.camera.password, 10000);
+      // The photo comes from the full-resolution stream, as the plate reads do.
+      const hdUrl = s.camera.hdStreamUrl || s.camera.streamUrl;
+      const frame = await captureRtspSnapshot(hdUrl, s.camera.username, s.camera.password, 12000);
       const capturedAt = new Date();
       let result = { width: 0, height: 0, detections: [] };
       try { result = await detector.detect(frame, { minConfidence: 0.25 }); } catch (err) { this.log(`vehicle detection failed: ${err.message}`); }
       const target = largestVehicle(result.detections);
       if (target) target.triggered = true;
       const wantPlate = !!target && s.plates.enabled && s.scale.readPlate !== false;
-      const hdUrl = s.camera.hdStreamUrl || s.camera.streamUrl;
       let plate = null;
       Object.assign(current, { frame, result, target, capturedAt });
       const tryPlate = async (attempt) => {
@@ -201,7 +202,9 @@ class WeighingPipeline {
         for (let attempt = 2; attempt <= attempts && (!plate || plate.confidence < PLATE_CONFIDENT); attempt++) {
           await sleep(wait);
           if (!this.isLoaded()) break;
-          if (await tryPlate(attempt)) this.history.update(entry.id, { plate });
+          // A better plate goes on the photo too, not just the entry: the
+          // history showed one plate and the picture another (or none).
+          if (await tryPlate(attempt)) this.history.update(entry.id, { plate }, await this.stampPhoto(current.frame, current.result, { weightText, plate, capturedAt: current.capturedAt }));
           if (this.current !== current) break; // the deck cleared, or another truck is being weighed
         }
       }

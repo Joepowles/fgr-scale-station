@@ -6,7 +6,10 @@ import { fmtWeight, fmtTime } from '../lib';
 export default function HistoryDrawer({ info, onClose }) {
   const [entries, setEntries] = useState([]);
   const [stats, setStats] = useState(null);
-  const [open, setOpen] = useState(null);
+  // The id, not the entry: the entry is updated while the truck is still on
+  // the deck (a better plate, a closer picture), and the preview follows it.
+  const [openId, setOpenId] = useState(null);
+  const open = entries.find((e) => e.id === openId) || null;
 
   const load = async () => {
     setEntries(await window.station.history.list({ limit: 300 }));
@@ -14,7 +17,9 @@ export default function HistoryDrawer({ info, onClose }) {
   };
   useEffect(() => { load(); return window.station.history.onEntry(() => load()); }, []);
 
-  const photoUrl = (name) => `http://127.0.0.1:${info.serverPort}/photo/${encodeURIComponent(name)}`;
+  // A corrected photo keeps its file name, so the link carries when it last
+  // changed: otherwise the window keeps showing the picture it loaded first.
+  const photoUrl = (e) => `http://127.0.0.1:${info.serverPort}/photo/${encodeURIComponent(e.photo)}?v=${encodeURIComponent(e.photoAt || e.plate?.readAt || e.corrected?.at || '')}`;
 
   return (
     <div className="absolute inset-y-0 right-0 w-full max-w-md bg-gray-950/95 border-l border-gray-800 flex flex-col shadow-2xl">
@@ -31,8 +36,8 @@ export default function HistoryDrawer({ info, onClose }) {
       <div className="flex-1 overflow-y-auto divide-y divide-gray-800">
         {!entries.length && <p className="p-4 text-sm text-gray-500">No weighings yet.</p>}
         {entries.map((e) => (
-          <button key={e.id} type="button" onClick={() => setOpen(e)} className="w-full text-left px-4 py-2.5 hover:bg-gray-900 flex items-center gap-3">
-            {e.photo ? <img src={photoUrl(e.photo)} alt="" className="w-20 h-12 object-cover rounded bg-black shrink-0" loading="lazy" /> : <div className="w-20 h-12 rounded bg-gray-900 shrink-0" />}
+          <button key={e.id} type="button" onClick={() => setOpenId(e.id)} className="w-full text-left px-4 py-2.5 hover:bg-gray-900 flex items-center gap-3">
+            {e.photo ? <img src={photoUrl(e)} alt="" className="w-20 h-12 object-cover rounded bg-black shrink-0" loading="lazy" /> : <div className="w-20 h-12 rounded bg-gray-900 shrink-0" />}
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <span className="mono font-bold text-emerald-300">{fmtWeight(e.weight, e.unit)}</span>
@@ -44,12 +49,12 @@ export default function HistoryDrawer({ info, onClose }) {
         ))}
       </div>
       {open && (
-        <div className="absolute inset-0 bg-black/95 flex flex-col" onClick={() => setOpen(null)}>
+        <div className="absolute inset-0 bg-black/95 flex flex-col" onClick={() => setOpenId(null)}>
           <div className="px-4 py-3 flex items-center justify-between text-sm">
             <span><span className="mono font-bold text-emerald-300">{fmtWeight(open.weight, open.unit)}</span>{open.plate?.text ? <> · <span className="mono font-bold">{open.plate.text}</span></> : ''} · {fmtTime(open.at)}</span>
             <span className="text-gray-500">click to close</span>
           </div>
-          {open.photo ? <img src={photoUrl(open.photo)} alt="" className="flex-1 min-h-0 object-contain" /> : <p className="flex-1 flex items-center justify-center text-gray-500">No photo for this weighing</p>}
+          {open.photo ? <img src={photoUrl(open)} alt="" className="flex-1 min-h-0 object-contain" /> : <p className="flex-1 flex items-center justify-center text-gray-500">No photo for this weighing</p>}
         </div>
       )}
     </div>

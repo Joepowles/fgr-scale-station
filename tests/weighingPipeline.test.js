@@ -14,7 +14,9 @@ stub('../src/main/services/vehicleDetector', {
   detect: async () => ({ width: 640, height: 480, detections: [{ box: [0.1, 0.1, 0.9, 0.9], isVehicle: true, label: 'truck', score: 0.9 }] }),
   annotate: async (frame, { weight, plate }) => Buffer.from(`${frame.toString()}|${weight?.text || ''}|${plate?.text || ''}`)
 });
-stub('../src/main/services/plateReader', { readPlates: async () => ({ plates: [{ text: 'ABC123', confidence: 0.95 }] }) });
+// Reads to hand out in turn; then always ABC123 at 95%.
+const plateReads = [];
+stub('../src/main/services/plateReader', { readPlates: async () => ({ plates: [plateReads.shift() || { text: 'ABC123', confidence: 0.95 }] }) });
 stub('sharp', () => ({ metadata: async () => ({ width: 640, height: 480 }), extract: () => ({ jpeg: () => ({ toBuffer: async () => Buffer.from('crop') }) }) }));
 
 const { WeighingPipeline } = require('../src/main/services/weighingPipeline');
@@ -86,4 +88,17 @@ test('a reweigh that lands while the first photo is still being taken is applied
   assert.equal(entry.weight, 38200);
   assert.equal(entry.corrected.from, 4740);
   assert.equal(history.read().length, 1);
+});
+
+test('a better plate read after the photo was saved goes on the photo too', async () => {
+  const history = new History({ folder: fs.mkdtempSync(path.join(os.tmpdir(), 'station-pipe-')) });
+  const settings = settingsFor('rtsp://cam');
+  const pipeline = new WeighingPipeline({ settings: () => ({ ...settings(), plates: { ...settings().plates, retryAttempts: 2 } }), history, isLoaded: () => true, onPlate: () => {}, log: () => {} });
+  plateReads.push({ text: 'ABC128', confidence: 0.7 }, { text: 'ABC123', confidence: 0.95 });
+  const entry = await pipeline.onWeighed({ weight: 4740, unit: 'lb', at: Date.now() });
+  const [saved] = history.read();
+  assert.equal(saved.id, entry.id);
+  assert.equal(saved.plate.text, 'ABC123');
+  // The history said ABC123 while the photo still said ABC128.
+  assert.equal(fs.readFileSync(history.photoPath(saved.photo), 'utf8').endsWith('|4,740 lb|ABC123'), true);
 });
