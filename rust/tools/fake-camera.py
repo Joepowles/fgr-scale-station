@@ -3,6 +3,7 @@
 the real cameras do, with a moving test picture and the time burned in.
 
     python3 tools/fake-camera.py [port] [--image photo.jpg]   # default 8554
+    python3 tools/fake-camera.py --frames 'dir/frame%03d.jpg' [--fps 4]
 
 With --image the picture is that photo (a truck with a plate, say) instead
 of a test pattern, for trying the plate reader.
@@ -23,12 +24,19 @@ Gst.init(None)
 parser = argparse.ArgumentParser()
 parser.add_argument("port", nargs="?", default="8554")
 parser.add_argument("--image", help="a JPEG to show instead of the test pattern")
+parser.add_argument("--frames", help="numbered JPEGs (frame%%03d.jpg) played on a loop: a truck pulling up, say")
+parser.add_argument("--fps", default="4", help="frames a second for --frames")
 options = parser.parse_args()
 port = options.port
 
 
 def factory(width, height):
-    if options.image:
+    if options.frames:
+        source = (
+            f"multifilesrc location=\"{options.frames}\" index=0 loop=true caps=\"image/jpeg,framerate={options.fps}/1\" ! jpegdec "
+            f"! videoscale add-borders=true ! videoconvert ! videorate ! video/x-raw,width={width},height={height},framerate=15/1"
+        )
+    elif options.image:
         source = (
             f"filesrc location=\"{options.image}\" ! jpegdec ! imagefreeze is-live=true "
             f"! videoscale add-borders=true ! videoconvert ! video/x-raw,width={width},height={height},framerate=15/1"

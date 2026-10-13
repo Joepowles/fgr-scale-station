@@ -84,9 +84,11 @@ pub struct ScaleStatus {
 #[derive(Debug, Clone)]
 pub enum ScaleEvent {
     Status(ScaleStatus),
+    /// A truck is rolling on; it has not settled yet.
+    Arrived,
     Weighed(Weighing),
     Reweighed(Weighing),
-    #[allow(dead_code)] // read by the weighing pipeline, not ported yet
+    #[allow(dead_code)] // the pipeline only needs to know the deck is clear
     Cleared {
         weight: f64,
         at: i64,
@@ -202,6 +204,7 @@ impl ScaleCore {
             });
             match event {
                 None => {}
+                Some(TriggerEvent::Arrived { .. }) => (self.sink)(ScaleEvent::Arrived),
                 Some(TriggerEvent::Weighed { weight, unit, gross, .. }) => {
                     let weighing = Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate: None, previous: None };
                     self.set_status(now, true, |s| s.last_weighing = Some(weighing.clone()));

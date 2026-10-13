@@ -16,6 +16,7 @@ mod scale;
 mod server;
 mod settings;
 mod stamp;
+mod truck_photos;
 mod updater;
 mod window_state;
 
@@ -123,6 +124,9 @@ fn start_scale(app: &AppHandle) {
     let sink = std::sync::Arc::new(move |event: ScaleEvent| match event {
         ScaleEvent::Status(status) => {
             let _ = handle.emit("scale:status", status);
+        }
+        ScaleEvent::Arrived => {
+            let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Arrived);
         }
         ScaleEvent::Weighed(w) => {
             log(&handle, format!("weighed {} {}", w.weight, w.unit));

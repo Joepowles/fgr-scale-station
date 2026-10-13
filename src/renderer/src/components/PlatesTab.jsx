@@ -3,6 +3,9 @@ import { CORNERS, btn } from '../lib';
 
 export default function PlatesTab({ draft, patch, info }) {
   const p = draft.plates;
+  // The Rust app's settings: it reads the whole frame, from the moment the
+  // truck arrives, rather than the biggest vehicle once it has settled.
+  const rust = p.pick !== undefined;
   const [reading, setReading] = useState(false);
   const [result, setResult] = useState(null);
 
@@ -29,10 +32,12 @@ export default function PlatesTab({ draft, patch, info }) {
             <span className="text-[11px] text-gray-500">Judged on the least certain character. A read under this is not shown and the reader tries again.</span>
           </label>
           <div className="grid grid-cols-2 gap-3">
-            <label className="block text-xs text-gray-400">Tries per truck<input type="number" min={1} max={30} className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm mt-1" value={p.retryAttempts} onChange={(e) => patch('plates', { retryAttempts: Number(e.target.value) })} /></label>
-            <label className="block text-xs text-gray-400">Seconds between tries<input type="number" min={1} max={30} className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm mt-1" value={p.retrySeconds} onChange={(e) => patch('plates', { retrySeconds: Number(e.target.value) })} /></label>
+            <label className="block text-xs text-gray-400">{rust ? 'Pictures per truck' : 'Tries per truck'}<input type="number" min={1} max={rust ? 120 : 30} className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm mt-1" value={p.retryAttempts} onChange={(e) => patch('plates', { retryAttempts: Number(e.target.value) })} /></label>
+            <label className="block text-xs text-gray-400">{rust ? 'Seconds between pictures' : 'Seconds between tries'}<input type="number" min={1} max={30} className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm mt-1" value={p.retrySeconds} onChange={(e) => patch('plates', { retrySeconds: Number(e.target.value) })} /></label>
           </div>
-          <p className="text-[11px] text-gray-500">The reader keeps trying while the truck is on the deck until it is at least 90% sure, and puts the better read on the history entry.</p>
+          <p className="text-[11px] text-gray-500">{rust
+            ? 'From the moment a truck rolls onto the scale, pictures are taken from the full-resolution stream and the plate read in each. The plate kept is the one read most surely across them, and the photo the one where it was largest - the truck as close as it came while its plate could still be read. The history entry and its photo are updated as better pictures come in, until the truck leaves.'
+            : 'The reader keeps trying while the truck is on the deck until it is at least 90% sure, and puts the better read on the history entry.'}</p>
           <label className="flex items-center gap-2 text-xs text-gray-300"><input type="checkbox" checked={p.requireDigit !== false} onChange={(e) => patch('plates', { requireDigit: e.target.checked })} /> A plate must contain a digit</label>
           <p className="text-[11px] text-gray-500 -mt-2">Dealer placards and stickers in the plate holder read as words. Commercial plates have digits; all-letter vanity plates would be missed.</p>
           <label className="block text-xs text-gray-400">Ignore these words
@@ -42,7 +47,7 @@ export default function PlatesTab({ draft, patch, info }) {
           {/* The Rust app reads the whole frame and chooses among the plates
               in it; the Electron app reads the biggest vehicle's instead, and
               has no such settings. */}
-          {p.pick !== undefined && (
+          {rust && (
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-3">
                 <label className="block text-xs text-gray-400">With more than one plate in view, take
@@ -79,7 +84,7 @@ export default function PlatesTab({ draft, patch, info }) {
         <div className="space-y-3">
           <h3 className="text-sm font-semibold">Try it</h3>
           <button type="button" onClick={readNow} disabled={reading || !draft.camera.streamUrl} className={btn}>{reading ? 'Reading…' : '🔎 Read a plate now'}</button>
-          <p className="text-[11px] text-gray-500">{p.pick !== undefined ? 'Grabs a frame from the full-resolution stream and reads the plate the settings here would take.' : 'Grabs a frame, finds the biggest vehicle in it and reads its plate from the full-resolution stream.'} Takes a few seconds. Uses the saved camera settings.</p>
+          <p className="text-[11px] text-gray-500">{rust ? 'Grabs a frame from the full-resolution stream and reads the plate the settings here would take.' : 'Grabs a frame, finds the biggest vehicle in it and reads its plate from the full-resolution stream.'} Takes a few seconds. Uses the saved camera settings.</p>
           {result && (
             <p className={`text-xs ${result.plate ? 'text-emerald-300' : 'text-amber-300'}`}>
               {result.plate ? <>Read <span className="mono font-bold">{result.plate.text}</span> at {Math.round(result.plate.confidence * 100)}% in {(result.ms / 1000).toFixed(1)} s (frame {result.plate.frameWidth}×{result.plate.frameHeight})</> : `✗ ${result.error}`}

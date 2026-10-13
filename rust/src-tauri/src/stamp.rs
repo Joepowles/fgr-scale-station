@@ -72,11 +72,12 @@ pub fn clock_text(at: DateTime<Local>) -> String {
 }
 
 /// The JPEG with the stamp drawn on, or the error that stopped it.
-pub fn stamp_jpeg(jpeg: &[u8], stamp: &Stamp) -> Result<Vec<u8>, String> {
+/// `quality`: the history's photo quality setting (85 by default).
+pub fn stamp_jpeg(jpeg: &[u8], stamp: &Stamp, quality: u8) -> Result<Vec<u8>, String> {
     let mut image = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg).map_err(|e| e.to_string())?.to_rgb8();
     draw(&mut image, stamp);
     let mut out = Vec::new();
-    JpegEncoder::new_with_quality(&mut out, 85).encode_image(&image).map_err(|e| e.to_string())?;
+    JpegEncoder::new_with_quality(&mut out, quality).encode_image(&image).map_err(|e| e.to_string())?;
     Ok(out)
 }
 
@@ -178,9 +179,9 @@ mod tests {
     fn stamps_a_jpeg_and_keeps_its_size() {
         let mut jpeg = Vec::new();
         JpegEncoder::new_with_quality(&mut jpeg, 90).encode_image(&grey(640, 360)).unwrap();
-        let stamped = stamp_jpeg(&jpeg, &stamp()).unwrap();
+        let stamped = stamp_jpeg(&jpeg, &stamp(), 85).unwrap();
         assert_eq!(crate::camera::snapshot::jpeg_size(&stamped), Some((640, 360)));
-        assert!(stamp_jpeg(b"not a jpeg", &stamp()).is_err());
+        assert!(stamp_jpeg(b"not a jpeg", &stamp(), 85).is_err());
     }
 
     #[test]

@@ -29,8 +29,8 @@ pub fn defaults() -> Value {
             "enabled": true,
             "minConfidence": 0.6,
             "overlayCorner": "top-left",
-            "retryAttempts": 10,
-            "retrySeconds": 3,
+            "retryAttempts": 30,
+            "retrySeconds": 1,
             "stampPhoto": true,
             "requireDigit": true,
             "ignoreWords": "",
@@ -74,7 +74,7 @@ pub fn defaults() -> Value {
             "repo": "Joepowles/fgr-scale-station",
             "githubToken": ""
         },
-        "meta": { "version": 2 }
+        "meta": { "version": 3 }
     })
 }
 
@@ -113,6 +113,19 @@ fn migrate(mut settings: Value, saved_version: u64) -> Value {
         };
         move_corner("/plates/overlayCorner", "bottom-left", "top-left");
         move_corner("/scale/overlayCorner", "bottom-right", "bottom-left");
+    }
+    if saved_version < 3 {
+        // Tries after the settle became pictures from the moment the truck
+        // rolls on: ten, three seconds apart, missed a truck pulling up.
+        let mut move_default = |pointer: &str, from: i64, to: i64| {
+            if let Some(v) = settings.pointer_mut(pointer) {
+                if v.as_f64() == Some(from as f64) {
+                    *v = to.into();
+                }
+            }
+        };
+        move_default("/plates/retryAttempts", 10, 30);
+        move_default("/plates/retrySeconds", 3, 1);
     }
     settings["meta"]["version"] = version_of(&defaults()).into();
     settings
@@ -203,6 +216,17 @@ mod tests {
     }
 
     #[test]
+    fn old_picture_defaults_move_but_chosen_ones_stay() {
+        let migrated = migrate(merge(&defaults(), &json!({ "plates": { "retryAttempts": 10, "retrySeconds": 3 }, "meta": { "version": 2 } })), 2);
+        assert_eq!(migrated["plates"]["retryAttempts"], 30);
+        assert_eq!(migrated["plates"]["retrySeconds"], 1);
+        let chosen = migrate(merge(&defaults(), &json!({ "plates": { "retryAttempts": 12, "retrySeconds": 2 }, "meta": { "version": 2 } })), 2);
+        assert_eq!(chosen["plates"]["retryAttempts"], 12);
+        assert_eq!(chosen["plates"]["retrySeconds"], 2);
+        assert_eq!(chosen["meta"]["version"], 3);
+    }
+
+    #[test]
     fn old_default_corners_move_but_chosen_ones_stay() {
         let dir = scratch("migrate");
         fs::create_dir_all(&dir).unwrap();
@@ -211,10 +235,10 @@ mod tests {
         let store = SettingsStore::load(&dir);
         assert_eq!(store.get()["plates"]["overlayCorner"], "top-left");
         assert_eq!(store.get()["scale"]["overlayCorner"], "top-right");
-        assert_eq!(store.get()["meta"]["version"], 2);
+        assert_eq!(store.get()["meta"]["version"], 3);
         // and the migrated file was written back
         let on_disk: Value = serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
-        assert_eq!(on_disk["meta"]["version"], 2);
+        assert_eq!(on_disk["meta"]["version"], 3);
     }
 
     #[test]

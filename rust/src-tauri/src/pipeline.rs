@@ -1,19 +1,23 @@
-//! What happens when the scale says a truck has settled: photograph it, read
-//! its plate off the full-resolution stream, stamp the weight and plate on
-//! the picture, write it all to the history, and keep trying for a better
-//! plate while the truck is still on the deck. If the scale then settles
-//! heavier (the rest of the truck, or its trailer, rolled on after the first
-//! settle), the same entry is corrected: new weight, new picture, the plate
-//! kept.
+//! What happens to a truck on the scale: photograph it, read its plate,
+//! stamp the weight and plate on the picture, and write it to the history.
+//!
+//! It starts when the truck rolls onto the deck (the scale's Arrived), not
+//! when it settles: the plate is readable as the truck comes on, and often
+//! not by the time it has pulled up. From then until the deck clears, one
+//! connection to the full-resolution stream (camera/burst.rs) hands out
+//! frames, and each frame's plates are read. truck_photos.rs adds them up:
+//! the plate read most surely across the frames, and the frame where that
+//! plate was largest - the truck closest while still readable - as the
+//! photo, in full resolution. The history entry is written when the truck
+//! settles, and rewritten, stamp and all, whenever a later frame gives a
+//! surer plate or a closer picture, so the stamped plate is always the
+//! entry's. If the scale settles heavier (the trailer rolled on after the
+//! first settle), the same entry takes the new weight.
 //!
 //! Unlike the Electron app there is no vehicle detector: the scale is what
 //! says a truck is there, the reader finds every plate in the whole frame,
 //! and plate_choice picks the truck's (the biggest, toward the side the
 //! settings favour) from among them.
-//!
-//! The scale's events arrive on a channel. Each weighing then runs as a task
-//! of its own, so a reweigh or a cleared deck is heard while the photo is
-//! still being taken or the plate retries are going.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -23,66 +27,97 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
-use crate::camera::{self, CameraSettings};
+use crate::camera::{self, burst::Burst, CameraSettings};
 use crate::history::{weight_value, Entry, NewEvent};
 use crate::plate_choice::{self, Rules};
 use crate::scale::frames::format_weight;
 use crate::scale::reader::Weighing;
 use crate::stamp::{self, Corner, Stamp};
+use crate::truck_photos::{Photo, Truck};
 use crate::{log, AppState};
 
-/// A plate this good is not worth retrying for.
+/// A plate this sure, unchanged for a few frames after the truck settled,
+/// is not worth more frames.
 const PLATE_CONFIDENT: f64 = 0.9;
+const STEADY_FRAMES: u32 = 3;
 const PHOTO_TIMEOUT: Duration = Duration::from_secs(10);
 const HD_TIMEOUT: Duration = Duration::from_secs(12);
+/// How often the full-resolution feed writes a frame; the newest is read.
+const FEED_FPS: f64 = 2.0;
 
 #[derive(Debug)]
 pub enum Event {
+    Arrived,
     Weighed(Weighing),
     Reweighed(Weighing),
     Cleared,
 }
 
-/// The truck on the deck now, and what has been made of it so far.
-#[derive(Default)]
-struct Current {
-    entry_id: Option<String>,
-    /// The photo (unstamped) and when it was taken, to re-stamp on a reweigh.
-    frame: Option<(Vec<u8>, DateTime<Local>)>,
-    plate: Option<Value>,
-    /// A heavier settle that arrived before the first one was written.
-    pending_reweigh: Option<Weighing>,
+/// What has been written to the history for the truck, to tell what changed.
+#[derive(Default, PartialEq, Clone)]
+struct Written {
+    plate: Option<String>,
+    /// The plate's confidence (in hundredths) and frames: rewritten on the
+    /// entry as they change, but no reason to stamp the photo again.
+    plate_detail: Option<(u32, u32)>,
+    photo: Option<u32>,
+    weight: Option<f64>,
 }
 
-type Shared = Arc<Mutex<Current>>;
+/// The truck on the deck now.
+#[derive(Default)]
+struct Session {
+    truck: Truck,
+    /// Set when it settles; a reweigh changes the weight.
+    weighing: Option<Weighing>,
+    /// The first settled weight, once a reweigh has corrected it.
+    corrected: Option<Value>,
+    entry_id: Option<String>,
+    written: Written,
+    /// The frame loop is running.
+    capturing: bool,
+    /// The deck cleared, or the next truck came.
+    over: bool,
+    /// Why no photo, for the entry's note.
+    camera_error: Option<String>,
+}
+
+type Shared = Arc<Mutex<Session>>;
 
 #[derive(Clone)]
 struct Pipeline {
     app: AppHandle,
     current: Arc<Mutex<Option<Shared>>>,
-    /// One photo at a time; a second truck meanwhile is logged without one.
-    busy: Arc<Mutex<bool>>,
+    /// One history write at a time.
+    writing: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Starts the task; send the scale's events to what comes back.
 pub fn start(app: AppHandle) -> mpsc::UnboundedSender<Event> {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let pipeline = Pipeline { app, current: Arc::default(), busy: Arc::default() };
+    let pipeline = Pipeline { app, current: Arc::default(), writing: Arc::default() };
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             let p = pipeline.clone();
             match event {
+                Event::Arrived => {
+                    p.session(true);
+                }
                 Event::Weighed(w) => {
-                    // Registered before anything is awaited, so a heavier settle
-                    // that lands while the photo is taken is held against it.
-                    let current = Shared::default();
-                    *p.current.lock().unwrap() = Some(current.clone());
-                    tauri::async_runtime::spawn(async move { p.on_weighed(w, current).await });
+                    let session = p.session(false);
+                    session.lock().unwrap().weighing = Some(w);
+                    p.start_capture(&session);
+                    tauri::async_runtime::spawn(async move { p.on_weighed(session).await });
                 }
                 Event::Reweighed(w) => {
-                    tauri::async_runtime::spawn(async move { p.on_reweighed(w).await });
+                    let Some(session) = p.current.lock().unwrap().clone() else { continue };
+                    tauri::async_runtime::spawn(async move { p.on_reweighed(session, w).await });
                 }
-                Event::Cleared => *p.current.lock().unwrap() = None,
+                Event::Cleared => {
+                    if let Some(session) = p.current.lock().unwrap().take() {
+                        session.lock().unwrap().over = true;
+                    }
+                }
             }
         }
     });
@@ -96,6 +131,10 @@ fn object(value: Value) -> Entry {
     }
 }
 
+fn now_iso() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
 impl Pipeline {
     fn settings(&self) -> Value {
         self.app.state::<AppState>().settings.lock().unwrap().get().clone()
@@ -105,219 +144,266 @@ impl Pipeline {
         log(&self.app, message);
     }
 
-    fn is_current(&self, current: &Shared) -> bool {
-        self.current.lock().unwrap().as_ref().is_some_and(|c| Arc::ptr_eq(c, current))
-    }
-
-    fn truck_on_deck(&self) -> bool {
-        self.app.state::<AppState>().scale.lock().unwrap().as_ref().is_some_and(|s| s.loaded())
-    }
-
-    fn record(&self, event: NewEvent, photo: Option<&[u8]>) -> Option<Entry> {
-        let state = self.app.state::<AppState>();
-        let result = state.history.lock().unwrap().as_ref().map(|h| h.record(event, photo));
-        match result {
-            Some(Ok(entry)) => Some(entry),
-            Some(Err(err)) => {
-                self.log(format!("could not write the history: {err}"));
-                None
+    /// The truck on the deck, a new one if there is none. `arrived`: it is
+    /// only rolling on, so the frames start now.
+    fn session(&self, arrived: bool) -> Shared {
+        let session = {
+            let mut current = self.current.lock().unwrap();
+            if let Some(s) = current.as_ref().filter(|s| !s.lock().unwrap().over) {
+                return s.clone();
             }
-            None => None,
-        }
-    }
-
-    fn update(&self, id: &str, patch: Entry, photo: Option<&[u8]>) {
-        let state = self.app.state::<AppState>();
-        let result = state.history.lock().unwrap().as_ref().map(|h| h.update(id, &patch, photo));
-        if let Some(Err(err)) = result {
-            self.log(format!("could not update the history: {err}"));
-        }
-    }
-
-    /// The weighing is in the history; a reweigh held meanwhile is applied.
-    async fn written(&self, current: &Shared, entry: Option<Entry>) {
-        let held = {
-            let mut c = current.lock().unwrap();
-            c.entry_id = entry.as_ref().and_then(|e| e.get("id")?.as_str().map(String::from));
-            c.pending_reweigh.take()
+            let fresh = Shared::default();
+            *current = Some(fresh.clone());
+            fresh
         };
-        if let Some(held) = held {
-            Box::pin(self.on_reweighed(held)).await;
+        if arrived {
+            self.log("a truck is coming onto the scale");
+            self.start_capture(&session);
         }
+        session
     }
 
-    fn stamp(&self, frame: &[u8], taken_at: DateTime<Local>, weight_text: &str, plate: Option<&Value>) -> Vec<u8> {
+    fn is_current(&self, session: &Shared) -> bool {
+        self.current.lock().unwrap().as_ref().is_some_and(|c| Arc::ptr_eq(c, session))
+    }
+
+    fn stamp(&self, frame: &[u8], taken_at: DateTime<Local>, weight_text: &str, plate: Option<&str>) -> Vec<u8> {
         let s = self.settings();
         let plate_corner = Corner::named(s["plates"]["overlayCorner"].as_str().unwrap_or("top-left"));
         let weight_corner = s["scale"]["overlayCorner"].as_str().map_or(plate_corner.opposite(), Corner::named);
-        let plate_text = plate.and_then(|p| p["text"].as_str()).filter(|_| s["plates"]["stampPhoto"] != false);
+        let plate_text = plate.filter(|_| s["plates"]["stampPhoto"] != false);
         let stamp = Stamp {
             taken_at,
             plate: plate_text.map(|t| (t.to_string(), plate_corner)),
             weight: (s["scale"]["stampPhoto"] != false).then(|| (weight_text.to_string(), weight_corner)),
         };
-        stamp::stamp_jpeg(frame, &stamp).unwrap_or_else(|err| {
+        let quality = s["history"]["photoQuality"].as_u64().map_or(85, |q| q.clamp(30, 100) as u8);
+        stamp::stamp_jpeg(frame, &stamp, quality).unwrap_or_else(|err| {
             self.log(format!("could not stamp the photo: {err}"));
             frame.to_vec()
         })
     }
 
-    /// One read of the plate off the HD stream. True when it found a better
-    /// one than `current` had.
-    async fn try_plate(&self, current: &Shared, camera: &CameraSettings, rules: &Rules, attempt: u32) -> bool {
-        let state = self.app.state::<AppState>();
-        let Some(hd_url) = camera.url(true) else { return false };
-        let hd = match camera::snapshot::capture(&hd_url, "", "", HD_TIMEOUT).await {
-            Ok(hd) => hd,
-            Err(err) => {
-                self.log(format!("plate read failed: {err}"));
-                return false;
-            }
-        };
-        let width = camera::snapshot::jpeg_size(&hd).map_or(0.0, |(w, _)| f64::from(w));
-        let choice = match state.plates.read(&hd).await {
-            Ok(plates) => plate_choice::choose(&plates, width, rules),
-            Err(err) => {
-                self.log(format!("plate read failed: {err}"));
-                return false;
-            }
-        };
-        let Some(read) = choice.plate else {
-            match choice.under_floor {
-                Some(weak) => self.log(format!("plate \"{}\" at {}%, under the floor (attempt {attempt})", weak.text, (weak.confidence * 100.0).round())),
-                None => self.log(format!("no plate found (attempt {attempt})")),
-            }
-            return false;
-        };
-        let percent = (read.confidence * 100.0).round();
-        let better = current.lock().unwrap().plate.as_ref().is_none_or(|p| read.confidence > p["confidence"].as_f64().unwrap_or(0.0));
-        if !better {
-            return false;
-        }
-        let plate = json!({
-            "text": read.text,
-            "confidence": (read.confidence * 100.0).round() / 100.0,
-            "readAt": Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
-        });
-        current.lock().unwrap().plate = Some(plate.clone());
-        self.log(format!("plate {} ({percent}%, attempt {attempt})", read.text));
-        if let Some(scale) = state.scale.lock().unwrap().as_ref() {
-            scale.record_plate(plate.clone());
-        }
-        let _ = self.app.emit("scale:plate", &plate);
-        true
-    }
-
-    async fn on_weighed(&self, weighing: Weighing, current: Shared) {
+    /// Takes frames for as long as the truck is there; once at a time.
+    fn start_capture(&self, session: &Shared) {
         let s = self.settings();
         if s["scale"]["capturePhoto"] == false {
             return;
         }
         let camera: CameraSettings = serde_json::from_value(s["camera"].clone()).unwrap_or_default();
-        let plain = |note: &str| NewEvent {
-            weight: Some(weighing.weight),
-            unit: Some(weighing.unit.to_string()),
-            at: Some(weighing.at),
-            note: note.to_string(),
-            ..Default::default()
-        };
-        let Some(photo_url) = camera.url(false) else {
-            self.log("weighing with no camera set up - logged without a photo");
-            let entry = self.record(plain(""), None);
-            return self.written(&current, entry).await;
-        };
-        // Taken and released in one statement: a std Mutex guard must not be
-        // held across an .await.
-        let already_busy = std::mem::replace(&mut *self.busy.lock().unwrap(), true);
-        if already_busy {
-            self.log("a weighing is still being photographed; this one is logged without a picture");
-            let entry = self.record(plain("camera busy"), None);
-            return self.written(&current, entry).await;
-        }
-
-        let weight_text = format_weight(weighing.weight, weighing.unit);
-        self.log(format!("{weight_text} on the scale - photographing"));
-        match camera::snapshot::capture(&photo_url, "", "", PHOTO_TIMEOUT).await {
-            Err(err) => {
-                self.log(format!("weighing photo failed: {err}"));
-                let entry = self.record(plain(&format!("photo failed: {err}")), None);
-                self.written(&current, entry).await;
+        let Some(url) = camera.url(true) else { return };
+        {
+            let mut session = session.lock().unwrap();
+            if session.capturing || session.over {
+                return;
             }
-            Ok(frame) => {
-                let taken_at = Local::now();
-                current.lock().unwrap().frame = Some((frame.clone(), taken_at));
-                let want_plate = s["plates"]["enabled"] != false && s["scale"]["readPlate"] != false;
-                let rules: Rules = serde_json::from_value(s["plates"].clone()).unwrap_or_default();
-                if want_plate {
-                    self.try_plate(&current, &camera, &rules, 1).await;
-                }
-                let plate = current.lock().unwrap().plate.clone();
-                let photo = self.stamp(&frame, taken_at, &weight_text, plate.as_ref());
-                let event = NewEvent { plate: plate.clone(), ..plain("") };
-                let entry = self.record(event, Some(&photo));
-                let entry_id = entry.as_ref().and_then(|e| e.get("id")?.as_str().map(String::from));
-                self.written(&current, entry).await;
-
-                // Keep trying for a better plate while the truck is still there.
-                if let (true, Some(entry_id)) = (want_plate, entry_id) {
-                    let attempts = s["plates"]["retryAttempts"].as_u64().filter(|&n| n > 0).unwrap_or(10) as u32;
-                    let wait = Duration::from_secs(s["plates"]["retrySeconds"].as_u64().filter(|&n| n > 0).unwrap_or(3));
-                    for attempt in 2..=attempts {
-                        let good_enough = current.lock().unwrap().plate.as_ref().is_some_and(|p| p["confidence"].as_f64().unwrap_or(0.0) >= PLATE_CONFIDENT);
-                        if good_enough {
-                            break;
-                        }
-                        tokio::time::sleep(wait).await;
-                        if !self.truck_on_deck() || !self.is_current(&current) {
-                            break; // the deck cleared, or another truck is being weighed
-                        }
-                        if self.try_plate(&current, &camera, &rules, attempt).await {
-                            let plate = current.lock().unwrap().plate.clone();
-                            self.update(&entry_id, object(json!({ "plate": plate })), None);
-                        }
-                    }
-                }
-            }
+            session.capturing = true;
         }
-        *self.busy.lock().unwrap() = false;
+        let (p, session) = (self.clone(), session.clone());
+        tauri::async_runtime::spawn(async move {
+            p.capture(&session, &url).await;
+            session.lock().unwrap().capturing = false;
+            // The last frames may have changed what is written.
+            p.sync(&session, false).await;
+        });
     }
 
-    /// More of the same truck on the deck: the entry keeps its id, time and
-    /// plate and takes the new weight, with a fresh picture of the whole
-    /// truck if the camera gives one, or the first picture re-stamped if not.
-    async fn on_reweighed(&self, weighing: Weighing) {
-        let Some(current) = self.current.lock().unwrap().clone() else { return };
-        let (entry_id, frame, plate) = {
-            let mut c = current.lock().unwrap();
-            let Some(entry_id) = c.entry_id.clone() else {
-                // Still photographing the first settle; applied once written.
-                c.pending_reweigh = Some(weighing);
-                return;
+    async fn capture(&self, session: &Shared, url: &str) {
+        let s = self.settings();
+        let read_plates = s["plates"]["enabled"] != false && s["scale"]["readPlate"] != false;
+        let rules: Rules = serde_json::from_value(s["plates"].clone()).unwrap_or_default();
+        let max_frames = s["plates"]["retryAttempts"].as_u64().filter(|&n| n > 0).unwrap_or(30) as u32;
+        let every = Duration::from_secs_f64(s["plates"]["retrySeconds"].as_f64().filter(|&n| n > 0.0).unwrap_or(1.0).clamp(0.25, 30.0));
+        let mut burst = Burst::start(url, FEED_FPS).map_err(|err| self.log(format!("full-resolution feed: {err}; using single snapshots"))).ok();
+        let (mut taken, mut steady) = (0u32, 0u32);
+        while taken < max_frames && !session.lock().unwrap().over && self.is_current(session) {
+            let started = tokio::time::Instant::now();
+            let frame = match burst.as_mut() {
+                Some(b) => b.next(PHOTO_TIMEOUT).await.map(|(jpeg, _)| jpeg).ok_or_else(|| "the full-resolution feed sent nothing".to_string()),
+                None => camera::snapshot::capture(url, "", "", HD_TIMEOUT).await,
             };
-            (entry_id, c.frame.clone(), c.plate.clone())
+            let jpeg = match frame {
+                Ok(jpeg) => jpeg,
+                Err(err) => {
+                    self.log(format!("no frame from the camera: {err}"));
+                    session.lock().unwrap().camera_error = Some(err);
+                    if burst.take().is_none() {
+                        break; // snapshots fail too: the camera is not answering
+                    }
+                    continue;
+                }
+            };
+            taken += 1;
+            let taken_at = Local::now();
+            let settled = session.lock().unwrap().weighing.is_some();
+            let read = if read_plates {
+                let width = camera::snapshot::jpeg_size(&jpeg).map_or(0.0, |(w, _)| f64::from(w));
+                match self.app.state::<AppState>().plates.read(&jpeg).await {
+                    Ok(plates) => plate_choice::choose(&plates, width, &rules).plate,
+                    Err(err) => {
+                        self.log(format!("plate read failed: {err}"));
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let seen = read.as_ref().map(|r| format!("{} {:.0}%", r.text, r.confidence * 100.0));
+            let change = session.lock().unwrap().truck.add(jpeg, taken_at, read, settled);
+            if change.plate || change.photo {
+                let plate = session.lock().unwrap().truck.plate();
+                let what = match (change.plate, &plate) {
+                    (true, Some(p)) => format!("plate {} ({:.0}%, {} frame{})", p.text, p.confidence * 100.0, p.frames, if p.frames == 1 { "" } else { "s" }),
+                    _ => "a closer picture".into(),
+                };
+                self.log(format!("frame {taken}: {what}{}", seen.map_or(String::new(), |s| format!(" - read {s}"))));
+                steady = 0;
+                self.sync(session, false).await;
+            } else if settled {
+                steady += 1;
+            }
+            // Settled, sure of the plate, and nothing better for a few frames.
+            let sure = session.lock().unwrap().truck.plate().is_some_and(|p| p.confidence >= PLATE_CONFIDENT);
+            if settled && (steady >= STEADY_FRAMES && (sure || !read_plates)) {
+                break;
+            }
+            if let Some(rest) = every.checked_sub(started.elapsed()) {
+                tokio::time::sleep(rest).await;
+            }
+        }
+        let summary = {
+            let s = session.lock().unwrap();
+            let plate = s.truck.plate().map_or("no plate".to_string(), |p| format!("plate {} ({:.0}%, {} frames)", p.text, p.confidence * 100.0, p.frames));
+            format!("{} frames of the truck; {plate}", s.truck.frames())
         };
+        self.log(summary);
+    }
+
+    /// Settled: written now if there is a picture (or no camera), otherwise
+    /// as soon as a frame comes, and without one if none comes in time.
+    async fn on_weighed(&self, session: Shared) {
+        let s = self.settings();
+        if s["scale"]["capturePhoto"] == false {
+            return;
+        }
+        let weighing = session.lock().unwrap().weighing.clone().expect("set before");
+        self.log(format!("{} on the scale - photographing", format_weight(weighing.weight, weighing.unit)));
+        let camera: CameraSettings = serde_json::from_value(s["camera"].clone()).unwrap_or_default();
+        if camera.url(true).is_none() {
+            self.log("weighing with no camera set up - logged without a photo");
+            return self.sync(&session, true).await;
+        }
+        self.sync(&session, false).await;
+        tokio::time::sleep(PHOTO_TIMEOUT).await;
+        {
+            let mut s = session.lock().unwrap();
+            if s.truck.photo().is_none() && s.camera_error.is_none() {
+                s.camera_error = Some(format!("no frame from the camera within {} s", PHOTO_TIMEOUT.as_secs()));
+            }
+        }
+        self.sync(&session, true).await;
+    }
+
+    async fn on_reweighed(&self, session: Shared, weighing: Weighing) {
+        let previous = weighing.previous.unwrap_or_default();
+        self.log(format!(
+            "{} on the scale - more of the truck; correcting {}",
+            format_weight(weighing.weight, weighing.unit),
+            format_weight(previous, weighing.unit)
+        ));
+        {
+            let mut s = session.lock().unwrap();
+            let at = DateTime::from_timestamp_millis(weighing.at).map(|t| t.to_rfc3339_opts(SecondsFormat::Millis, true));
+            s.corrected.get_or_insert(json!({ "from": weight_value(previous), "at": at }));
+            if let Some(w) = s.weighing.as_mut() {
+                w.weight = weighing.weight;
+                w.unit = weighing.unit;
+            }
+        }
+        self.sync(&session, false).await;
+    }
+
+    /// Brings the history up to date with what is known of the truck: the
+    /// entry written once it has settled, then rewritten - photo re-stamped -
+    /// when the plate, the picture or the weight changes. `without_photo`:
+    /// write it even with no picture yet.
+    async fn sync(&self, session: &Shared, without_photo: bool) {
+        let _one_at_a_time = self.writing.lock().await;
+        let (weighing, plate, photo, entry_id, written, corrected, note) = {
+            let s = session.lock().unwrap();
+            let Some(weighing) = s.weighing.clone() else { return };
+            let note = s.camera_error.as_ref().map(|e| format!("photo failed: {e}")).unwrap_or_default();
+            (weighing, s.truck.plate(), s.truck.photo().cloned(), s.entry_id.clone(), s.written.clone(), s.corrected.clone(), note)
+        };
+        if entry_id.is_none() && photo.is_none() && !without_photo {
+            return; // the first frame after settling is on its way
+        }
+        let now = Written {
+            plate: plate.as_ref().map(|p| p.text.clone()),
+            plate_detail: plate.as_ref().map(|p| ((p.confidence * 100.0).round() as u32, p.frames)),
+            photo: photo.as_ref().map(|p| p.id),
+            weight: Some(weighing.weight),
+        };
+        if entry_id.is_some() && now == written {
+            return;
+        }
         let weight_text = format_weight(weighing.weight, weighing.unit);
-        self.log(format!("{weight_text} on the scale - more of the truck; correcting {}", format_weight(weighing.previous.unwrap_or_default(), weighing.unit)));
-        let at = DateTime::from_timestamp_millis(weighing.at).map(|t| t.to_rfc3339_opts(SecondsFormat::Millis, true));
-        let patch = object(json!({
-            "weight": weight_value(weighing.weight),
-            "unit": weighing.unit.to_string(),
-            "corrected": { "from": weighing.previous.map(weight_value), "at": at },
-        }));
-        let camera: CameraSettings = serde_json::from_value(self.settings()["camera"].clone()).unwrap_or_default();
-        let (Some((first, first_at)), Some(url)) = (frame, camera.url(false)) else {
-            return self.update(&entry_id, patch, None);
-        };
-        let (frame, taken_at) = match camera::snapshot::capture(&url, "", "", PHOTO_TIMEOUT).await {
-            Ok(frame) => (frame, Local::now()),
-            Err(err) => {
-                self.log(format!("could not re-photograph the truck ({err}); re-stamping the first picture"));
-                (first, first_at)
+        let plate_json =
+            plate.as_ref().map(|p| json!({ "text": p.text, "confidence": (p.confidence * 100.0).round() / 100.0, "frames": p.frames, "readAt": now_iso() }));
+        // The photo is stamped again only when what is on it changes.
+        let restamp = entry_id.is_none() || now.plate != written.plate || now.photo != written.photo || now.weight != written.weight;
+        let stamped = photo.as_ref().filter(|_| restamp).map(|Photo { jpeg, taken_at, .. }| self.stamp(jpeg, *taken_at, &weight_text, now.plate.as_deref()));
+        let state = self.app.state::<AppState>();
+        let history = state.history.lock().unwrap();
+        let Some(history) = history.as_ref() else { return };
+        let result = match &entry_id {
+            None => {
+                let event = NewEvent {
+                    weight: Some(weighing.weight),
+                    unit: Some(weighing.unit.to_string()),
+                    at: Some(weighing.at),
+                    plate: plate_json.clone(),
+                    note: if stamped.is_none() { note } else { String::new() },
+                    ..Default::default()
+                };
+                // A reweigh that came before the entry was written goes on it now.
+                history.record(event, stamped.as_deref()).and_then(|entry| match (&corrected, entry.get("id").and_then(Value::as_str)) {
+                    (Some(corrected), Some(id)) => Ok(history.update(id, &object(json!({ "corrected": corrected })), None)?.or(Some(entry))),
+                    _ => Ok(Some(entry)),
+                })
+            }
+            Some(id) => {
+                let mut patch = json!({ "weight": weight_value(weighing.weight), "unit": weighing.unit.to_string() });
+                if now.plate != written.plate || now.plate_detail != written.plate_detail {
+                    patch["plate"] = plate_json.clone().unwrap_or(Value::Null);
+                }
+                if let Some(corrected) = &corrected {
+                    patch["corrected"] = corrected.clone();
+                }
+                if stamped.is_some() {
+                    patch["photoAt"] = now_iso().into();
+                    patch["note"] = "".into();
+                }
+                history.update(id, &object(patch), stamped.as_deref())
             }
         };
-        current.lock().unwrap().frame = Some((frame.clone(), taken_at));
-        let photo = self.stamp(&frame, taken_at, &weight_text, plate.as_ref());
-        self.update(&entry_id, patch, Some(&photo));
+        match result {
+            Ok(Some(entry)) => {
+                let mut s = session.lock().unwrap();
+                s.entry_id = entry.get("id").and_then(Value::as_str).map(String::from);
+                s.written = now.clone();
+            }
+            Ok(None) => {}
+            Err(err) => self.log(format!("could not write the history: {err}")),
+        }
+        if now.plate != written.plate {
+            if let Some(plate) = plate_json {
+                if let Some(scale) = state.scale.lock().unwrap().as_ref() {
+                    scale.record_plate(plate.clone());
+                }
+                let _ = self.app.emit("scale:plate", &plate);
+            }
+        }
     }
 }
 

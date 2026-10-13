@@ -189,9 +189,29 @@ impl Default for TriggerSettings {
 /// What a reading amounted to, when it amounted to anything.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TriggerEvent {
-    Weighed { weight: f64, unit: Option<Unit>, gross: bool, at: i64 },
-    Reweighed { weight: f64, previous: f64, unit: Option<Unit>, gross: bool, at: i64 },
-    Cleared { weight: f64, at: i64 },
+    /// Something over the minimum weight has come onto the deck: a truck
+    /// rolling on, not settled yet. Once per truck.
+    Arrived {
+        weight: f64,
+        at: i64,
+    },
+    Weighed {
+        weight: f64,
+        unit: Option<Unit>,
+        gross: bool,
+        at: i64,
+    },
+    Reweighed {
+        weight: f64,
+        previous: f64,
+        unit: Option<Unit>,
+        gross: bool,
+        at: i64,
+    },
+    Cleared {
+        weight: f64,
+        at: i64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -233,6 +253,8 @@ pub struct WeighingTrigger {
     tolerance: f64,
     window: VecDeque<Sample>,
     pub armed: bool,
+    /// Arrived has been raised for what is on the deck now.
+    pub arrived: bool,
     pub settled: bool,
     pub last_weighing: Option<LastWeighing>,
 }
@@ -247,6 +269,7 @@ impl WeighingTrigger {
             tolerance: s.stable_tolerance.max(0.0),
             window: VecDeque::new(),
             armed: true,
+            arrived: false,
             settled: false,
             last_weighing: None,
         }
@@ -273,6 +296,7 @@ impl WeighingTrigger {
         if !self.armed {
             if spans_window && max <= self.clear_weight {
                 self.armed = true;
+                self.arrived = false;
                 return Some(TriggerEvent::Cleared { weight, at });
             }
             if let Some(last) = self.last_weighing {
@@ -285,8 +309,18 @@ impl WeighingTrigger {
         }
         if settled && weight >= self.min_weight {
             self.armed = false;
+            self.arrived = true;
             self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at });
             return Some(TriggerEvent::Weighed { weight, unit: reading.unit, gross: reading.gross, at });
+        }
+        if !self.arrived && weight >= self.min_weight {
+            self.arrived = true;
+            return Some(TriggerEvent::Arrived { weight, at });
+        }
+        // A truck that came on and backed off again without settling.
+        if self.arrived && spans_window && max <= self.clear_weight {
+            self.arrived = false;
+            return Some(TriggerEvent::Cleared { weight, at });
         }
         None
     }
@@ -411,10 +445,15 @@ mod tests {
                 self.feed(weight(i), motion);
             }
         }
+        /// The events, less Arrived (see every_event).
         fn kinds(&self) -> Vec<&'static str> {
+            self.every_event().into_iter().filter(|k| *k != "arrived").collect()
+        }
+        fn every_event(&self) -> Vec<&'static str> {
             self.events
                 .iter()
                 .map(|e| match e {
+                    TriggerEvent::Arrived { .. } => "arrived",
                     TriggerEvent::Weighed { .. } => "weighed",
                     TriggerEvent::Reweighed { .. } => "reweighed",
                     TriggerEvent::Cleared { .. } => "cleared",
@@ -422,12 +461,15 @@ mod tests {
                 .collect()
         }
         fn weight_of(&self, i: usize) -> f64 {
-            match self.events[i] {
+            let events: Vec<&TriggerEvent> = self.events.iter().filter(|e| !matches!(e, TriggerEvent::Arrived { .. })).collect();
+            match *events[i] {
+                TriggerEvent::Arrived { .. } => unreachable!(),
                 TriggerEvent::Weighed { weight, .. } | TriggerEvent::Reweighed { weight, .. } | TriggerEvent::Cleared { weight, .. } => weight,
             }
         }
         fn previous_of(&self, i: usize) -> f64 {
-            match self.events[i] {
+            let events: Vec<&TriggerEvent> = self.events.iter().filter(|e| !matches!(e, TriggerEvent::Arrived { .. })).collect();
+            match *events[i] {
                 TriggerEvent::Reweighed { previous, .. } => previous,
                 _ => panic!("event {i} is not a reweigh"),
             }
@@ -440,7 +482,7 @@ mod tests {
         t.feed_n(40, |_| 140.0, false); // empty deck, 2 s
         t.feed_n(20, |i| 20000.0 + i as f64 * 900.0, true); // rolling on, moving
         t.feed_n(30, |i| 48300.0 + (i % 3) as f64 * 10.0, false); // 1.5 s settled: not yet
-        assert!(t.events.is_empty());
+        assert!(t.kinds().is_empty());
         t.feed_n(20, |i| 48300.0 + (i % 3) as f64 * 10.0, false); // past 2 s
         assert_eq!(t.kinds(), ["weighed"]);
         assert!(t.trigger.last_weighing.unwrap().weight >= 48300.0);
@@ -457,10 +499,41 @@ mod tests {
     }
 
     #[test]
+    fn says_a_truck_has_arrived_as_it_rolls_on_before_it_settles() {
+        let mut t = Rig::new(5000.0, 2.0, 1000);
+        t.feed_n(40, |_| 140.0, false);
+        t.feed_n(5, |i| 2000.0 + i as f64 * 500.0, true); // front wheels, under the minimum
+        assert!(t.kinds().is_empty());
+        t.feed_n(20, |i| 20000.0 + i as f64 * 900.0, true); // rolling on
+        assert_eq!(t.every_event(), ["arrived"]);
+        t.feed_n(50, |_| 48300.0, false);
+        assert_eq!(t.every_event(), ["arrived", "weighed"]);
+        t.feed_n(50, |_| 140.0, false);
+        assert_eq!(t.every_event(), ["arrived", "weighed", "cleared"]);
+        // The next truck arrives afresh.
+        t.feed_n(5, |_| 12000.0, true);
+        assert_eq!(t.every_event(), ["arrived", "weighed", "cleared", "arrived"]);
+    }
+
+    #[test]
+    fn a_truck_that_backs_off_without_settling_clears_the_deck() {
+        let mut t = Rig::new(5000.0, 2.0, 1000);
+        t.feed_n(40, |_| 140.0, false);
+        t.feed_n(20, |i| 8000.0 + i as f64 * 100.0, true);
+        t.feed_n(5, |_| 140.0, false); // a moment clear: not yet
+        assert_eq!(t.every_event(), ["arrived"]);
+        t.feed_n(50, |_| 140.0, false);
+        assert_eq!(t.every_event(), ["arrived", "cleared"]);
+        assert!(t.trigger.armed); // the next truck is weighed as usual
+        t.feed_n(50, |_| 31000.0, false);
+        assert_eq!(t.every_event(), ["arrived", "cleared", "arrived", "weighed"]);
+    }
+
+    #[test]
     fn a_reading_that_wobbles_beyond_the_tolerance_never_settles() {
         let mut t = Rig::new(5000.0, 1.0, 0);
         t.feed_n(100, |i| 30000.0 + (i % 2) as f64 * 100.0, false);
-        assert!(t.events.is_empty());
+        assert!(t.kinds().is_empty());
         assert!(!t.trigger.settled);
     }
 
@@ -480,14 +553,14 @@ mod tests {
         assert!(t.weight_of(1) >= 38200.0);
         assert_eq!(t.trigger.last_weighing.unwrap().weight, t.weight_of(1));
         t.feed_n(60, |_| 38210.0, false); // still there: nothing more
-        assert_eq!(t.events.len(), 2);
+        assert_eq!(t.kinds().len(), 2);
         t.feed_n(20, |i| 40000.0 + i as f64 * 1000.0, true); // the trailer comes on
         t.feed_n(50, |i| 79000.0 + (i % 2) as f64 * 20.0, false);
         assert_eq!(t.kinds(), ["weighed", "reweighed", "reweighed"]);
         assert_eq!(t.previous_of(2), t.weight_of(1));
         t.feed_n(20, |_| 60000.0, true); // part of it rolls off: a lighter settle is not a correction
         t.feed_n(50, |_| 50000.0, false);
-        assert_eq!(t.events.len(), 3);
+        assert_eq!(t.kinds().len(), 3);
         t.feed_n(45, |_| 140.0, false);
         assert_eq!(t.kinds(), ["weighed", "reweighed", "reweighed", "cleared"]);
         assert_eq!(t.trigger.last_weighing.unwrap().weight, t.weight_of(2));
