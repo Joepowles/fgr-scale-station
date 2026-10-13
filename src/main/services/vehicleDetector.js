@@ -33,7 +33,10 @@ const COCO_CLASSES = [
   'teddy bear', 'hair drier', 'toothbrush'
 ];
 
-const VEHICLE_CLASSES = new Set(['car', 'truck', 'bus', 'motorcycle']);
+// 'train' because a truck seen head-on up close, its headlights blowing out
+// the grille at night, comes back as "train" - the truck on the scale did,
+// and the plate was read off a truck parked in the yard behind it instead.
+const VEHICLE_CLASSES = new Set(['car', 'truck', 'bus', 'motorcycle', 'train']);
 // 'person' is COCO class 0, so the model already reports people on every frame
 // — they were simply filtered out of alerts until now.
 const PERSON_CLASSES = new Set(['person']);

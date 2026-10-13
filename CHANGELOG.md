@@ -4,6 +4,7 @@ Newest first. The app shows this file on the Updates tab of its settings.
 
 ## 0.1.14
 
+- The plate is read off the truck on the scale, not one parked in the yard behind it. A truck seen head-on with its headlights on at night can be taken for a train by the vehicle finder, and trains were not counted as vehicles, so the photo picked the next vehicle it saw.
 - Only one copy of the app runs at a time. Opening it again while it is running brings the open window forward. Before, a second copy read the same scale and every truck was logged twice.
 - When an update check fails, a "Copy error" button on the Updates tab copies the whole error, to paste into a message. A check made in the few minutes while a new version is still being published now says so, instead of "Cannot find latest.yml".
 - The live view no longer comes up gray and blocky. When the camera's frame rate could not be read on connecting, the picture was encoded as if at 90,000 frames a second, leaving almost nothing for each frame. It is now always sent at 15 frames a second, which also takes less of the PC's time. A Reconnect button at the top right of the picture connects to the camera again, should it ever be needed.
