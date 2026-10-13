@@ -32,7 +32,7 @@ export default function PlatesTab({ draft, patch, info }) {
             <span className="text-[11px] text-gray-500">Judged on the least certain character. A read under this is not shown and the reader tries again.</span>
           </label>
           <div className="grid grid-cols-2 gap-3">
-            <label className="block text-xs text-gray-400">{rust ? 'Pictures per truck' : 'Tries per truck'}<input type="number" min={1} max={rust ? 120 : 30} className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm mt-1" value={p.retryAttempts} onChange={(e) => patch('plates', { retryAttempts: Number(e.target.value) })} /></label>
+            <label className="block text-xs text-gray-400">{rust ? 'Pictures per truck' : 'Tries per truck'}<input type="number" min={1} max={rust ? 600 : 30} className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm mt-1" value={p.retryAttempts} onChange={(e) => patch('plates', { retryAttempts: Number(e.target.value) })} /></label>
             <label className="block text-xs text-gray-400">{rust ? 'Seconds between pictures' : 'Seconds between tries'}<input type="number" min={1} max={30} className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm mt-1" value={p.retrySeconds} onChange={(e) => patch('plates', { retrySeconds: Number(e.target.value) })} /></label>
           </div>
           <p className="text-[11px] text-gray-500">{rust

@@ -29,7 +29,7 @@ pub fn defaults() -> Value {
             "enabled": true,
             "minConfidence": 0.6,
             "overlayCorner": "top-left",
-            "retryAttempts": 30,
+            "retryAttempts": 90,
             "retrySeconds": 1,
             "stampPhoto": true,
             "requireDigit": true,
@@ -74,7 +74,7 @@ pub fn defaults() -> Value {
             "repo": "Joepowles/fgr-scale-station",
             "githubToken": ""
         },
-        "meta": { "version": 3 }
+        "meta": { "version": 4 }
     })
 }
 
@@ -124,8 +124,17 @@ fn migrate(mut settings: Value, saved_version: u64) -> Value {
                 }
             }
         };
-        move_default("/plates/retryAttempts", 10, 30);
+        move_default("/plates/retryAttempts", 10, 90);
         move_default("/plates/retrySeconds", 3, 1);
+    }
+    if saved_version == 3 {
+        // 30 pictures stopped the first yard truck just as its plate came
+        // into reach, 28 s after it rolled on.
+        if let Some(v) = settings.pointer_mut("/plates/retryAttempts") {
+            if v.as_f64() == Some(30.0) {
+                *v = 90.into();
+            }
+        }
     }
     settings["meta"]["version"] = version_of(&defaults()).into();
     settings
@@ -218,12 +227,14 @@ mod tests {
     #[test]
     fn old_picture_defaults_move_but_chosen_ones_stay() {
         let migrated = migrate(merge(&defaults(), &json!({ "plates": { "retryAttempts": 10, "retrySeconds": 3 }, "meta": { "version": 2 } })), 2);
-        assert_eq!(migrated["plates"]["retryAttempts"], 30);
+        assert_eq!(migrated["plates"]["retryAttempts"], 90);
         assert_eq!(migrated["plates"]["retrySeconds"], 1);
         let chosen = migrate(merge(&defaults(), &json!({ "plates": { "retryAttempts": 12, "retrySeconds": 2 }, "meta": { "version": 2 } })), 2);
         assert_eq!(chosen["plates"]["retryAttempts"], 12);
         assert_eq!(chosen["plates"]["retrySeconds"], 2);
-        assert_eq!(chosen["meta"]["version"], 3);
+        assert_eq!(chosen["meta"]["version"], 4);
+        let beta = migrate(merge(&defaults(), &json!({ "plates": { "retryAttempts": 30 }, "meta": { "version": 3 } })), 3);
+        assert_eq!(beta["plates"]["retryAttempts"], 90);
     }
 
     #[test]
@@ -235,10 +246,10 @@ mod tests {
         let store = SettingsStore::load(&dir);
         assert_eq!(store.get()["plates"]["overlayCorner"], "top-left");
         assert_eq!(store.get()["scale"]["overlayCorner"], "top-right");
-        assert_eq!(store.get()["meta"]["version"], 3);
+        assert_eq!(store.get()["meta"]["version"], 4);
         // and the migrated file was written back
         let on_disk: Value = serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
-        assert_eq!(on_disk["meta"]["version"], 3);
+        assert_eq!(on_disk["meta"]["version"], 4);
     }
 
     #[test]

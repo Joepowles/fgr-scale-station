@@ -212,7 +212,7 @@ impl Pipeline {
         let s = self.settings();
         let read_plates = s["plates"]["enabled"] != false && s["scale"]["readPlate"] != false;
         let rules: Rules = serde_json::from_value(s["plates"].clone()).unwrap_or_default();
-        let max_frames = s["plates"]["retryAttempts"].as_u64().filter(|&n| n > 0).unwrap_or(30) as u32;
+        let max_frames = s["plates"]["retryAttempts"].as_u64().filter(|&n| n > 0).unwrap_or(90) as u32;
         let every = Duration::from_secs_f64(s["plates"]["retrySeconds"].as_f64().filter(|&n| n > 0.0).unwrap_or(1.0).clamp(0.25, 30.0));
         let mut burst = Burst::start(url, FEED_FPS).map_err(|err| self.log(format!("full-resolution feed: {err}; using single snapshots"))).ok();
         let (mut taken, mut steady) = (0u32, 0u32);
