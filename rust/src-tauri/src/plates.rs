@@ -257,6 +257,11 @@ impl PlateReader {
         Ok(plates)
     }
 
+    /// Stops the helper, so its exe can be replaced by an update.
+    pub async fn stop(&self) {
+        self.worker.lock().await.take(); // dropping it kills the process
+    }
+
     /// Loads the models now rather than when the first truck arrives.
     pub async fn warm_up(&self) {
         if let Err(err) = self.worker().await {

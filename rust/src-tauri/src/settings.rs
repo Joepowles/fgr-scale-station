@@ -118,6 +118,8 @@ fn migrate(mut settings: Value, saved_version: u64) -> Value {
     settings
 }
 
+pub const SETTINGS_FILE: &str = "settings.json";
+
 pub struct SettingsStore {
     file: PathBuf,
     current: Value,
@@ -126,7 +128,7 @@ pub struct SettingsStore {
 impl SettingsStore {
     pub fn load(folder: &Path) -> Self {
         let _ = fs::create_dir_all(folder);
-        let file = folder.join("settings.json");
+        let file = folder.join(SETTINGS_FILE);
         let saved = fs::read_to_string(&file).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok());
         let current = match saved {
             Some(raw) => {

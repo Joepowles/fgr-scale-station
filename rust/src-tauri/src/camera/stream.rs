@@ -609,7 +609,7 @@ mod tests {
         let mut first = Box::pin(streams.watch(FAKE_CAMERA));
         let init = first.next().await.expect("an init segment").unwrap();
         assert_eq!(kind(&init), "ftyp");
-        assert!(init.len() > 8 && kind(&Bytes::copy_from_slice(&init[init.len() - 8..])) != "", "the init segment and a keyframe");
+        assert!(init.windows(4).any(|w| w == b"moof"), "the init segment and a keyframe fragment, as one");
         let fragment = first.next().await.expect("a fragment").unwrap();
         assert_eq!(kind(&fragment), "moof");
 

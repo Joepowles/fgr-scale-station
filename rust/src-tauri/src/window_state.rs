@@ -165,7 +165,8 @@ mod tests {
         assert_eq!(placement_for(at(100.0, 100.0, 50.0, 800.0), &[MAIN]), None);
         assert_eq!(placement_for(at(f64::NAN, 100.0, 1280.0, 800.0), &[MAIN]), None);
         assert_eq!(placement_for(None, &[MAIN]), None);
-        assert_eq!(placement_for(at(1850.0, 1000.0, 1280.0, 800.0), &[MAIN]), None); // only a sliver showing
+        assert_eq!(placement_for(at(1850.0, 1000.0, 1280.0, 800.0), &[MAIN]), None);
+        // only a sliver showing
     }
 
     #[test]

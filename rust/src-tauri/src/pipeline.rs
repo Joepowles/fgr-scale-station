@@ -24,8 +24,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
 use crate::camera::{self, CameraSettings};
-use crate::plate_choice::{self, Rules};
 use crate::history::{weight_value, Entry, NewEvent};
+use crate::plate_choice::{self, Rules};
 use crate::scale::frames::format_weight;
 use crate::scale::reader::Weighing;
 use crate::stamp::{self, Corner, Stamp};

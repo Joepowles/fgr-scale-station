@@ -2,8 +2,6 @@
 // Electron preload exposed, rebuilt on Tauri's invoke() and listen(), so the
 // components did not have to change.
 //
-// Calls the Rust side does not have yet reject with "not ported yet"; the few
-// the window makes on startup answer with something harmless instead.
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -21,10 +19,6 @@ const on = (event) => (handler) => {
   listen(event, (e) => handler(e.payload)).then((fn) => { if (cancelled) fn(); else unlisten = fn; });
   return () => { cancelled = true; if (unlisten) unlisten(); };
 };
-
-const notYet = (what) => () => Promise.reject(new Error(`${what} is not ported to Rust yet`));
-const answer = (value) => () => Promise.resolve(value);
-const never = () => () => {};
 
 const win = getCurrentWindow();
 
@@ -50,5 +44,5 @@ window.station = {
     isFullscreen: () => win.isFullscreen(),
     onFullscreen: on('window:fullscreen')
   },
-  updates: { onReady: never(), install: answer(false), check: answer({ state: 'dev', message: 'Updates are not ported to Rust yet' }), status: answer(null), onStatus: never(), openReleases: call('app_open_releases') }
+  updates: { onReady: on('update:ready'), install: call('update_install'), check: call('update_check'), status: call('update_status'), onStatus: on('update:status'), openReleases: call('app_open_releases') }
 };

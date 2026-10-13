@@ -7,6 +7,7 @@
 
 mod bug_report;
 mod camera;
+mod electron_import;
 mod history;
 mod pipeline;
 mod plate_choice;
@@ -15,6 +16,7 @@ mod scale;
 mod server;
 mod settings;
 mod stamp;
+mod updater;
 mod window_state;
 
 use std::collections::VecDeque;
@@ -54,6 +56,7 @@ pub(crate) struct AppState {
     pipeline: UnboundedSender<pipeline::Event>,
     pub(crate) streams: camera::stream::Streams,
     pub(crate) plates: plates::PlateReader,
+    updater: std::sync::Arc<updater::Updater>,
     log: Mutex<VecDeque<String>>,
 }
 
@@ -197,6 +200,7 @@ fn apply_settings(app: &AppHandle) {
             let _ = win.set_fullscreen(fullscreen);
         }
     }
+    app.state::<AppState>().updater.settings_changed();
     // Start with Windows: a Run entry for this user, as Electron's login item.
     let start_with_windows = window["startWithWindows"].as_bool().unwrap_or(false);
     let autolaunch = app.autolaunch();
@@ -449,7 +453,8 @@ async fn support_save(app: AppHandle, args: Option<ReportArgs>) -> Result<Option
     let report = build_bug_report(&app, &args.unwrap_or_default().description);
     let stamp = chrono::Local::now().format("%Y-%m-%d-%H-%M-%S");
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut dialog = app.dialog().file().set_title("Save the bug report").set_file_name(format!("scale-station-report-{stamp}.md")).add_filter("Markdown", &["md"]);
+    let mut dialog =
+        app.dialog().file().set_title("Save the bug report").set_file_name(format!("scale-station-report-{stamp}.md")).add_filter("Markdown", &["md"]);
     if let Ok(desktop) = app.path().desktop_dir() {
         dialog = dialog.set_directory(desktop);
     }
@@ -470,6 +475,38 @@ fn support_open(app: AppHandle, args: Option<String>) -> Result<(), String> {
         return Ok(());
     }
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
+// ── Updates ────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn update_check(state: State<'_, AppState>) -> Result<Value, String> {
+    Ok(state.updater.check_now().await)
+}
+
+#[tauri::command]
+fn update_status(state: State<AppState>) -> Option<Value> {
+    state.updater.status()
+}
+
+/// Lets go of everything an update replaces: ffmpeg and the plate reader
+/// run from the install folder.
+fn release_install_folder(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    state.streams.stop_all();
+    tauri::async_runtime::block_on(state.plates.stop());
+}
+
+/// The Updates tab's "Restart to update": closes the app, installs the
+/// downloaded update and opens it again.
+#[tauri::command]
+fn update_install(app: AppHandle) -> bool {
+    release_install_folder(&app);
+    if !app.state::<AppState>().updater.install(true) {
+        return false;
+    }
+    app.exit(0);
+    true
 }
 
 #[tauri::command]
@@ -499,6 +536,9 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
             let data_dir_for_window = data_dir.clone();
+            // The first start on a PC that had the Electron app: carry on from its settings.
+            let electron_dir = electron_import::electron_data_dir(&app.path().config_dir()?);
+            let imported = electron_import::import(&electron_dir, &data_dir);
             let handle = app.handle().clone();
             let log_handle = handle.clone();
             let logger: camera::stream::Log = std::sync::Arc::new(move |line| log(&log_handle, line));
@@ -513,6 +553,7 @@ pub fn run() {
                 scale: Mutex::new(None),
                 history: Mutex::new(None),
                 pipeline: pipeline::start(handle.clone()),
+                updater: updater::Updater::new(&handle, app.path().app_local_data_dir()?.join("updates")),
                 log: Mutex::new(VecDeque::new()),
             });
             if let Some(win) = app.get_webview_window("main") {
@@ -530,7 +571,20 @@ pub fn run() {
                     }
                 });
             }
+            match imported {
+                Ok(Some(i)) => log(
+                    &handle,
+                    format!(
+                        "settings brought over from the Electron app ({}){}",
+                        i.from.display(),
+                        i.history_folder.map_or(String::new(), |f| format!("; history kept in {f}"))
+                    ),
+                ),
+                Ok(None) => {}
+                Err(err) => log(&handle, format!("could not bring the Electron app's settings over: {err}")),
+            }
             apply_settings(&handle);
+            handle.state::<AppState>().updater.start();
             prune_history_hourly(handle.clone());
             log(&handle, format!("station {} started (Rust)", app.package_info().version));
             Ok(())
@@ -561,13 +615,19 @@ pub fn run() {
             app_open_releases,
             support_send,
             support_save,
-            support_open
+            support_open,
+            update_check,
+            update_status,
+            update_install
         ])
         .build(tauri::generate_context!())
         .expect("error while building the station")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                app.state::<AppState>().streams.stop_all();
+                // A downloaded update goes in as the app closes, as the
+                // Electron app's did; it is opened again next time as usual.
+                release_install_folder(app);
+                app.state::<AppState>().updater.install(false);
             }
         });
 }

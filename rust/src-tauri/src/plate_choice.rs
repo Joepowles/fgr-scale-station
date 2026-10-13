@@ -42,14 +42,7 @@ pub struct Rules {
 
 impl Default for Rules {
     fn default() -> Self {
-        Self {
-            require_digit: true,
-            ignore_words: String::new(),
-            min_confidence: 0.6,
-            pick: "largest".into(),
-            favor_side: "right".into(),
-            favor_percent: 50.0,
-        }
+        Self { require_digit: true, ignore_words: String::new(), min_confidence: 0.6, pick: "largest".into(), favor_side: "right".into(), favor_percent: 50.0 }
     }
 }
 

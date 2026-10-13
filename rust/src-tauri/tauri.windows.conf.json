@@ -4,6 +4,12 @@
     "resources": {
       "../../resources/bin/plate-reader": null,
       "../../resources/bin/plate-reader.exe": "bin/plate-reader.exe"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/installer-hooks.nsh",
+        "installMode": "currentUser"
+      }
     }
   }
 }

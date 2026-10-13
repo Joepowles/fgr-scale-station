@@ -95,7 +95,13 @@ pub fn build(input: &Input) -> Report {
     let scale = match input.scale {
         Some(s) => {
             let weight = s["weight"].as_f64().map_or("-".into(), |w| w.to_string());
-            let state = if flag(&s["settled"]) { "settled" } else if flag(&s["motion"]) { "moving" } else { "settling" };
+            let state = if flag(&s["settled"]) {
+                "settled"
+            } else if flag(&s["motion"]) {
+                "moving"
+            } else {
+                "settling"
+            };
             let error = s["lastError"].as_str().filter(|e| !e.is_empty()).map_or(String::new(), |e| format!(" · last error: {e}"));
             format!(
                 "{} · {weight} {} · {state} · {} · {} frames{error}",
@@ -339,7 +345,10 @@ mod tests {
         let log: Vec<String> =
             (0..5000).map(|i| format!("2026-10-08T11:29:0{}.000Z weighed 32000 lb line {i} rtsp://admin:Egasi%23687@10.0.0.5/live", i % 10)).collect();
         let log = log.join("\n");
-        let history = [json!({ "id": "a", "weight": 32240, "plate": { "text": "P1033192" }, "photo": "a.jpg" }), json!({ "id": "b", "weight": 32000, "note": "camera busy", "photo": null })];
+        let history = [
+            json!({ "id": "a", "weight": 32240, "plate": { "text": "P1033192" }, "photo": "a.jpg" }),
+            json!({ "id": "b", "weight": 32000, "note": "camera busy", "photo": null }),
+        ];
         let info = json!({ "version": "0.2.0", "ffmpeg": true });
         let scale = json!({ "connected": true, "weight": 32000.0, "unit": "lb", "settled": true, "loaded": true, "frames": 10 });
         let s = settings();
