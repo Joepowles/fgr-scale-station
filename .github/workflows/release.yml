@@ -9,16 +9,28 @@ name: Release (Windows installer)
 # (v0.2.0-beta.1) is marked pre-release and carries beta.yml, which only a
 # PC set to the Beta channel takes. The version in package.json must match
 # the tag either way (0.2.0-beta.1).
+#
+# Two apps on the one feed, too. Tags v0.1.* are the Electron app (the
+# electron job); from v0.2.0 on, the Rust app in rust/ (the rust job). Both
+# write the same feed files, so a PC on the Electron app's beta channel
+# takes the first Rust beta like any other update.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      app:
+        description: Which app to build (a hand-started build is kept as an artifact for two days)
+        type: choice
+        options: [rust, electron]
+        default: rust
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  electron:
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref_name, 'v0.1.')) || (github.event_name == 'workflow_dispatch' && inputs.app == 'electron') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,3 +80,65 @@ jobs:
           path: dist/*.exe
           retention-days: 2
           if-no-files-found: ignore
+
+  rust:
+    if: ${{ (github.event_name == 'push' && !startsWith(github.ref_name, 'v0.1.')) || (github.event_name == 'workflow_dispatch' && inputs.app == 'rust') }}
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: rust/package-lock.json
+      # The runner image has Rust; ort needs 1.88 or newer.
+      - run: rustup update stable --no-self-update
+      - name: The tag matches the app's version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${{ github.ref_name }}"
+          for v in "$(node -p "require('./rust/package.json').version")" \
+                   "$(node -p "require('./rust/src-tauri/tauri.conf.json').version")" \
+                   "$(grep -m1 '^version' rust/src-tauri/Cargo.toml | cut -d'"' -f2)"; do
+            [ "v$v" = "$tag" ] || { echo "version $v does not match the tag $tag"; exit 1; }
+          done
+      - run: npm ci
+        working-directory: rust
+      - run: cargo test
+        working-directory: rust/src-tauri
+      - run: node scripts/fetch-ffmpeg.cjs
+        working-directory: rust
+      # The plate reader and its models, as the Electron app bundles them.
+      - run: node scripts/build-plate-reader.js
+      - run: npx tauri build
+        working-directory: rust
+      - run: node scripts/write-update-feed.cjs dist-release
+        working-directory: rust
+      # As a draft first, which the installed apps cannot see, then published
+      # once the installer and its feed file are both on it (issue #5). The
+      # installer goes up before the feed file that names it.
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ github.ref_name }}"
+          gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --title "$tag" --notes "Falcon Scale Station $tag" --draft ${{ contains(github.ref_name, '-') && '--prerelease' || '' }}
+          gh release upload "$tag" rust/dist-release/*.exe --clobber
+          gh release upload "$tag" rust/dist-release/*.yml --clobber
+          gh release edit "$tag" --draft=false
+      - name: Tidy releases
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/tidy-releases.js "${{ github.ref_name }}" --keep 5 --keep-prereleases 3
+      - uses: actions/upload-artifact@v4
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        with:
+          name: installer-rust
+          path: rust/dist-release/*
+          retention-days: 2
+          if-no-files-found: error
