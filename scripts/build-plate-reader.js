@@ -45,6 +45,20 @@ const download = (url, file, redirects = 0) => new Promise((resolve, reject) => 
   }).on('error', reject);
 });
 
+// GitHub's release downloads time out now and then from the build runner;
+// the v0.2.0 build failed on one (connect ETIMEDOUT). A few tries, spaced out.
+const downloadWithRetries = async (url, file, tries = 4) => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await download(url, file);
+    } catch (err) {
+      if (attempt >= tries) throw err;
+      console.log(`${err.message}; trying again (${attempt + 1} of ${tries}) ...`);
+      await new Promise((resolve) => setTimeout(resolve, attempt * 5000));
+    }
+  }
+};
+
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 (async () => {
@@ -56,7 +70,7 @@ const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file
       continue;
     }
     console.log(`Downloading ${model.url} ...`);
-    await download(model.url, `${target}.part`);
+    await downloadWithRetries(model.url, `${target}.part`);
     const got = sha256(`${target}.part`);
     if (got !== model.sha256) {
       fs.rmSync(`${target}.part`, { force: true });
