@@ -4,6 +4,9 @@ Newest first. The app shows this file on the Updates tab of its settings.
 
 ## 0.2.2
 
+- The history opens in a window of its own: "Pop out" on the history panel. Put it beside the camera picture or on another screen; it keeps up as trucks are weighed, opens where it was left, and opens again with the app if it was open when the app closed.
+- The live picture is no longer stretched too tall. A camera's small stream is often a widescreen picture squeezed into 704x480; it is now shown in the full-resolution stream's shape, so the two also line up when zooming switches between them, without the old picture showing above and below the new one.
+- A truck that sits on the scale without settling is now written in the log every half minute, with how far its weight moved and whether the scale's motion flag was on: a truck that never settles is never weighed, and the log has to say why.
 - A truck that pulls on right behind the one before is weighed. The app waited for the scale to read empty for two seconds before it would weigh another truck; trucks queued nose to tail leave it empty for less than that, so the next one was missed if it was lighter, or taken for more of the one before if it was heavier. Two readings in a row under the clear weight (1,000 lb unless changed on the Scale tab) now do.
 
 ## 0.2.1

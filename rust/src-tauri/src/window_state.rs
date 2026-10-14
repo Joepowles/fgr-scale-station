@@ -16,7 +16,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{LogicalPosition, LogicalSize, WebviewWindow, WindowEvent};
 
+/// The main window's; the history window has its own (HISTORY_FILE).
 pub const FILE: &str = "window-state.json";
+pub const HISTORY_FILE: &str = "history-window-state.json";
 const SAVE_DELAY: Duration = Duration::from_millis(500);
 /// Logical px of the window that must sit on some screen.
 const MIN_VISIBLE: f64 = 100.0;
@@ -40,13 +42,13 @@ pub struct Area {
     pub height: f64,
 }
 
-pub fn read(dir: &Path) -> Option<Saved> {
-    serde_json::from_str(&std::fs::read_to_string(dir.join(FILE)).ok()?).ok()
+pub fn read(dir: &Path, file: &str) -> Option<Saved> {
+    serde_json::from_str(&std::fs::read_to_string(dir.join(file)).ok()?).ok()
 }
 
-pub fn write(dir: &Path, saved: &Saved) {
+pub fn write(dir: &Path, file: &str, saved: &Saved) {
     if let Ok(text) = serde_json::to_string_pretty(saved) {
-        let _ = std::fs::write(dir.join(FILE), text);
+        let _ = std::fs::write(dir.join(file), text);
     }
 }
 
@@ -83,8 +85,8 @@ fn screens(win: &WebviewWindow) -> Vec<Area> {
 
 /// Puts the window back where it was, then shows it. The window starts
 /// hidden (tauri.conf.json) so it is never seen jumping there.
-pub fn restore(win: &WebviewWindow, dir: &Path) {
-    if let Some(p) = placement_for(read(dir), &screens(win)) {
+pub fn restore(win: &WebviewWindow, dir: &Path, file: &str) {
+    if let Some(p) = placement_for(read(dir, file), &screens(win)) {
         let _ = win.set_size(LogicalSize::new(p.width, p.height));
         let _ = win.set_position(LogicalPosition::new(p.x, p.y));
         if p.maximized {
@@ -114,8 +116,8 @@ fn capture(win: &WebviewWindow, state: &mut Saved) {
 }
 
 /// Saves the window's placement as it changes, and once more as it closes.
-pub fn track(win: &WebviewWindow, dir: &Path) {
-    let state = Arc::new(Mutex::new(read(dir).unwrap_or_default()));
+pub fn track(win: &WebviewWindow, dir: &Path, file: &'static str) {
+    let state = Arc::new(Mutex::new(read(dir, file).unwrap_or_default()));
     let generation = Arc::new(AtomicU64::new(0));
     let (window, dir) = (win.clone(), dir.to_path_buf());
     win.on_window_event(move |event| match event {
@@ -128,7 +130,7 @@ pub fn track(win: &WebviewWindow, dir: &Path) {
                 if generation.load(Ordering::SeqCst) == this {
                     let mut s = state.lock().unwrap();
                     capture(&window, &mut s);
-                    write(&dir, &s);
+                    write(&dir, file, &s);
                 }
             });
         }
@@ -136,7 +138,7 @@ pub fn track(win: &WebviewWindow, dir: &Path) {
             generation.fetch_add(1, Ordering::SeqCst);
             let mut s = state.lock().unwrap();
             capture(&window, &mut s);
-            write(&dir, &s);
+            write(&dir, file, &s);
         }
         _ => {}
     });
@@ -173,13 +175,14 @@ mod tests {
     fn reads_back_what_was_written_and_the_electron_apps_file() {
         let dir = std::env::temp_dir().join(format!("station-window-{}", fastrand::u32(..)));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(read(&dir), None);
+        assert_eq!(read(&dir, FILE), None);
         let saved = Saved { x: 1.0, y: 2.0, width: 800.0, height: 600.0, maximized: true };
-        write(&dir, &saved);
-        assert_eq!(read(&dir), Some(saved));
+        write(&dir, FILE, &saved);
+        assert_eq!(read(&dir, FILE), Some(saved));
         // As windowState.js writes it: integers, maximized possibly missing.
         std::fs::write(dir.join(FILE), r#"{ "x": 10, "y": 20, "width": 1280, "height": 800 }"#).unwrap();
-        assert_eq!(read(&dir), at(10.0, 20.0, 1280.0, 800.0));
+        assert_eq!(read(&dir, FILE), at(10.0, 20.0, 1280.0, 800.0));
+        assert_eq!(read(&dir, HISTORY_FILE), None); // each window its own file
         let _ = std::fs::remove_dir_all(dir);
     }
 }

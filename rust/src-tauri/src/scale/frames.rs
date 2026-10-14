@@ -286,6 +286,15 @@ impl WeighingTrigger {
         }
     }
 
+    /// The settling window now: lowest and highest weight in it, whether
+    /// the motion flag is up anywhere in it, and the tolerance it is held to.
+    /// For saying why a truck on the deck has not settled.
+    pub fn window_spread(&self) -> Option<(f64, f64, bool, f64)> {
+        let first = self.window.front()?;
+        let (min, max) = self.window.iter().fold((first.weight, first.weight), |(lo, hi), s| (lo.min(s.weight), hi.max(s.weight)));
+        Some((min, max, self.window.iter().any(|s| s.motion), self.tolerance))
+    }
+
     pub fn push(&mut self, reading: &Reading, at: i64) -> Option<TriggerEvent> {
         if !reading.valid {
             return None;

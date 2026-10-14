@@ -130,19 +130,24 @@ struct Camera {
 #[derive(Clone)]
 pub struct Streams {
     cameras: Arc<Mutex<HashMap<String, Arc<Camera>>>>,
+    /// The full-resolution streams' picture sizes, by URL, as frames from
+    /// them have shown: the small stream is shown in the same shape.
+    shapes: Arc<Mutex<HashMap<String, (u32, u32)>>>,
     log: Log,
 }
 
 impl Streams {
     pub fn new(log: Log) -> Self {
-        Self { cameras: Arc::default(), log }
+        Self { cameras: Arc::default(), shapes: Arc::default(), log }
     }
 
     /// The fragmented MP4 of `url` for one viewer, from the init segment on.
     /// Ends when the viewer falls behind, or ffmpeg restarts or gives up;
     /// the window's player reconnects. Dropping it is the viewer leaving.
-    pub fn watch(&self, url: &str) -> impl Stream<Item = Result<Bytes, Infallible>> + Send + 'static {
-        let camera = self.camera(url);
+    /// `shape`: width and height to show the picture in - the full-resolution
+    /// stream's, for the small one (see `shape_of`).
+    pub fn watch(&self, url: &str, shape: Option<(u32, u32)>) -> impl Stream<Item = Result<Bytes, Infallible>> + Send + 'static {
+        let camera = self.camera(url, shape);
         let start = Watching::Waiting { feed: camera.feed.subscribe(), viewer: Viewer::new(camera) };
         futures_util::stream::unfold(start, |state| async move {
             match state {
@@ -171,15 +176,16 @@ impl Streams {
     }
 
     /// The camera for `url`, starting its ffmpeg if nobody is watching it yet.
-    fn camera(&self, url: &str) -> Arc<Camera> {
+    fn camera(&self, url: &str, shape: Option<(u32, u32)>) -> Arc<Camera> {
+        let key = shape.map_or_else(|| url.to_string(), |(w, h)| format!("{url}#{w}x{h}"));
         let mut cameras = self.cameras.lock().unwrap();
-        if let Some(camera) = cameras.get(url) {
+        if let Some(camera) = cameras.get(&key) {
             return camera.clone();
         }
         let camera = Arc::new(Camera { feed: watch::channel(None).0, viewers: AtomicUsize::new(0), task: Mutex::new(None), reconnect: Notify::new() });
-        let task = tauri::async_runtime::spawn(supervise(camera.clone(), url.to_string(), self.cameras.clone(), self.log.clone()));
+        let task = tauri::async_runtime::spawn(supervise(camera.clone(), key.clone(), url.to_string(), shape, self.cameras.clone(), self.log.clone()));
         *camera.task.lock().unwrap() = Some(task);
-        cameras.insert(url.to_string(), camera.clone());
+        cameras.insert(key, camera.clone());
         camera
     }
 
@@ -188,6 +194,17 @@ impl Streams {
         for (_, camera) in self.cameras.lock().unwrap().drain() {
             camera.stop();
         }
+    }
+
+    /// Notes the size of a picture from the full-resolution stream at `url`.
+    /// True when it is new or changed: the small stream should be shown again
+    /// in that shape.
+    pub fn note_shape(&self, url: &str, width: u32, height: u32) -> bool {
+        (width > 0 && height > 0) && self.shapes.lock().unwrap().insert(url.to_string(), (width, height)) != Some((width, height))
+    }
+
+    pub fn shape_of(&self, url: &str) -> Option<(u32, u32)> {
+        self.shapes.lock().unwrap().get(url).copied()
     }
 
     /// The Reconnect button: every stream connects to its camera afresh, for
@@ -241,10 +258,10 @@ impl Drop for Viewer {
 /// Runs ffmpeg for one camera for as long as someone watches: restarted
 /// when it exits, given up after MAX_RESTARTS, stopped LINGER after the
 /// last viewer leaves.
-async fn supervise(camera: Arc<Camera>, url: String, cameras: Arc<Mutex<HashMap<String, Arc<Camera>>>>, log: Log) {
+async fn supervise(camera: Arc<Camera>, key: String, url: String, shape: Option<(u32, u32)>, cameras: Arc<Mutex<HashMap<String, Arc<Camera>>>>, log: Log) {
     let mut restarts = 0;
     loop {
-        let outcome = run_ffmpeg(&camera, &url, &log).await;
+        let outcome = run_ffmpeg(&camera, &url, shape, &log).await;
         camera.feed.send_replace(None);
         match outcome {
             Ended::Unwatched => break,
@@ -261,8 +278,8 @@ async fn supervise(camera: Arc<Camera>, url: String, cameras: Arc<Mutex<HashMap<
         }
     }
     let mut map = cameras.lock().unwrap();
-    if map.get(&url).is_some_and(|c| Arc::ptr_eq(c, &camera)) {
-        map.remove(&url);
+    if map.get(&key).is_some_and(|c| Arc::ptr_eq(c, &camera)) {
+        map.remove(&key);
     }
 }
 
@@ -272,7 +289,20 @@ enum Ended {
     Exited(String),
 }
 
-async fn run_ffmpeg(camera: &Camera, url: &str, log: &Log) -> Ended {
+/// The video filter: from the first keyframe, and stretched to `shape` when
+/// given. Cameras squeeze a widescreen picture into a 704x480 substream,
+/// which shows too tall (issue #13) and does not line up with the
+/// full-resolution one on the switch; this widens it to the same shape, in
+/// square pixels.
+pub fn video_filter(shape: Option<(u32, u32)>) -> String {
+    match shape {
+        Some((w, h)) => format!("{FROM_FIRST_KEYFRAME},scale='trunc(ih*{w}/{h}/2)*2':ih,setsar=1"),
+        None => FROM_FIRST_KEYFRAME.to_string(),
+    }
+}
+
+async fn run_ffmpeg(camera: &Camera, url: &str, shape: Option<(u32, u32)>, log: &Log) -> Ended {
+    let filter = video_filter(shape);
     let bitrate = std::env::var("CAMERA_STREAM_BITRATE").unwrap_or_else(|_| "1500k".into());
     let fps = std::env::var("CAMERA_STREAM_FPS").unwrap_or_else(|_| "15".into());
     // One flag and its value per line.
@@ -299,7 +329,7 @@ async fn run_ffmpeg(camera: &Camera, url: &str, log: &Log) -> Ended {
         // between keyframes, the frames decoded before one are gray smears
         // of whatever moved, and a new viewer (the HD switch while zoomed)
         // was shown them. Every frame after it passes.
-        "-vf", FROM_FIRST_KEYFRAME,
+        "-vf", &filter,
         "-fps_mode", "cfr",
         "-r", &fps,
         "-f", "mp4",
@@ -615,7 +645,7 @@ mod tests {
         let streams = Streams::new(Arc::new(|line| println!("{line}")));
         let kind = |b: &Bytes| String::from_utf8_lossy(&b[4..8]).into_owned();
 
-        let mut first = Box::pin(streams.watch(FAKE_CAMERA));
+        let mut first = Box::pin(streams.watch(FAKE_CAMERA, None));
         let init = first.next().await.expect("an init segment").unwrap();
         assert_eq!(kind(&init), "ftyp");
         assert!(init.windows(4).any(|w| w == b"moof"), "the init segment and a keyframe fragment, as one");
@@ -624,7 +654,7 @@ mod tests {
 
         // A second viewer joins mid-stream: the init segment and a keyframe
         // fragment, then every frame after it.
-        let mut second = Box::pin(streams.watch(FAKE_CAMERA));
+        let mut second = Box::pin(streams.watch(FAKE_CAMERA, None));
         let start = second.next().await.unwrap().unwrap();
         assert_eq!(kind(&start), "ftyp");
         assert_eq!(kind(&second.next().await.unwrap().unwrap()), "moof");

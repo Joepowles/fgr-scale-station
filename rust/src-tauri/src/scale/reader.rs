@@ -86,6 +86,15 @@ pub enum ScaleEvent {
     Status(ScaleStatus),
     /// A truck is rolling on; it has not settled yet.
     Arrived,
+    /// A truck has been on the deck this long without settling, and why: the
+    /// weight's spread over the settling window, and the motion flag.
+    Unsettled {
+        seconds: i64,
+        min: f64,
+        max: f64,
+        motion: bool,
+        tolerance: f64,
+    },
     Weighed(Weighing),
     Reweighed(Weighing),
     #[allow(dead_code)] // the pipeline only needs to know the deck is clear
@@ -99,12 +108,18 @@ pub enum ScaleEvent {
 /// back into the reader.
 pub type Sink = Arc<dyn Fn(ScaleEvent) + Send + Sync>;
 
+const UNSETTLED_AFTER_MS: i64 = 15_000;
+const UNSETTLED_EVERY_MS: i64 = 30_000;
+
 pub struct ScaleCore {
     unit: Unit,
     splitter: FrameSplitter,
     trigger: WeighingTrigger,
     status: ScaleStatus,
     last_emit_at: i64,
+    /// When the truck on the deck arrived, and when its not settling was last said.
+    arrived_at: Option<i64>,
+    unsettled_said_at: Option<i64>,
     sink: Sink,
 }
 
@@ -129,6 +144,8 @@ impl ScaleCore {
                 updated_at: now,
             },
             last_emit_at: 0,
+            arrived_at: None,
+            unsettled_said_at: None,
             sink,
         }
     }
@@ -204,8 +221,12 @@ impl ScaleCore {
             });
             match event {
                 None => {}
-                Some(TriggerEvent::Arrived { .. }) => (self.sink)(ScaleEvent::Arrived),
+                Some(TriggerEvent::Arrived { .. }) => {
+                    self.arrived_at = Some(now);
+                    (self.sink)(ScaleEvent::Arrived)
+                }
                 Some(TriggerEvent::Weighed { weight, unit, gross, .. }) => {
+                    self.arrived_at = None;
                     let weighing = Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate: None, previous: None };
                     self.set_status(now, true, |s| s.last_weighing = Some(weighing.clone()));
                     (self.sink)(ScaleEvent::Weighed(weighing));
@@ -219,10 +240,29 @@ impl ScaleCore {
                     (self.sink)(ScaleEvent::Reweighed(weighing));
                 }
                 Some(TriggerEvent::Cleared { weight, .. }) => {
+                    self.arrived_at = None;
                     self.set_status(now, true, |s| s.loaded = false);
                     (self.sink)(ScaleEvent::Cleared { weight, at: now });
                 }
             }
+            self.say_if_unsettled(now);
+        }
+    }
+
+    /// A truck on the deck that has not settled after UNSETTLED_AFTER_MS is
+    /// said, with why, every UNSETTLED_EVERY_MS: a truck that never settles
+    /// is never weighed (WC-Office, 2026-10-14 07:58, eight minutes on the
+    /// deck), and the log has to show whether it was the weight wandering or
+    /// the motion flag.
+    fn say_if_unsettled(&mut self, now: i64) {
+        let Some(arrived_at) = self.arrived_at else { return };
+        let said_lately = self.unsettled_said_at.is_some_and(|at| at >= arrived_at && now - at < UNSETTLED_EVERY_MS);
+        if !self.trigger.armed || now - arrived_at < UNSETTLED_AFTER_MS || said_lately {
+            return;
+        }
+        if let Some((min, max, motion, tolerance)) = self.trigger.window_spread() {
+            self.unsettled_said_at = Some(now);
+            (self.sink)(ScaleEvent::Unsettled { seconds: (now - arrived_at) / 1000, min, max, motion, tolerance });
         }
     }
 
@@ -468,6 +508,34 @@ mod tests {
     }
 
     // Ported from tests/scaleReader.test.js.
+    #[test]
+    fn says_why_a_truck_on_the_deck_has_not_settled() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let seen = events.clone();
+        let sink: Sink = Arc::new(move |e| seen.lock().unwrap().push(e));
+        let mut core = ScaleCore::new(&settings(), sink, 0);
+        let frame = |w: i64| format!("\x02{w:>7}LG \r\n");
+        let mut now = 0;
+        for _ in 0..10 {
+            core.on_data(frame(0).as_bytes(), now);
+            now += 250;
+        }
+        // On, wandering 60 lb either way: never within the 40 lb it settles to.
+        for i in 0..200 {
+            core.on_data(frame(35_560 + if i % 2 == 0 { 60 } else { -60 }).as_bytes(), now);
+            now += 250;
+        }
+        let said: Vec<_> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| if let ScaleEvent::Unsettled { seconds, min, max, motion, .. } = e { Some((*seconds, *min, *max, *motion)) } else { None })
+            .collect();
+        assert_eq!(said.len(), 2, "once at 15 s and again 30 s later: {said:?}");
+        assert_eq!((said[0].1, said[0].2, said[0].3), (35_500.0, 35_620.0, false));
+        assert!(said[0].0 >= 15 && said[1].0 >= 45);
+    }
+
     #[test]
     fn a_reader_that_adopts_a_loaded_one_does_not_weigh_the_same_truck_again() {
         let (sink, weighed) = recording();

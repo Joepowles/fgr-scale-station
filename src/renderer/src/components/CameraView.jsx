@@ -68,7 +68,7 @@ export default function CameraView({ settings, info, scale, display }) {
   wanted.current = src;
   useEffect(() => {
     // The one showing is kept, and only the newest of those still opening.
-    setPlayers((list) => (list[list.length - 1] === src ? list : [...list.filter((p) => p === shown), src]));
+    setPlayers((list) => (list[list.length - 1] === src ? list : [...new Set([...list.filter((p) => p === shown), src])]));
   }, [src, shown]);
   const onReady = (playerSrc) => {
     setShown(playerSrc);
@@ -144,6 +144,11 @@ export default function CameraView({ settings, info, scale, display }) {
     }, 60 * 1000);
     return () => clearInterval(t);
   }, []);
+
+  // The small stream's shape became known (the Rust app shows it in the
+  // full-resolution stream's, issue #13): open it again so; the picture stays
+  // until the new one plays.
+  useEffect(() => window.station.camera.onShape?.(() => setTick((t) => t + 1)), []);
 
   // A long session drifts; reconnect every half hour like the site's cards do.
   useEffect(() => {

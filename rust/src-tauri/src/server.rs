@@ -51,7 +51,15 @@ async fn stream(State(app): State<AppHandle>, Query(which): Query<Which>) -> Res
     if !camera::ffmpeg::available() {
         return (StatusCode::SERVICE_UNAVAILABLE, "ffmpeg missing").into_response();
     }
-    let body = Body::from_stream(app.state::<AppState>().streams.watch(&url));
+    // The small stream is shown in the full-resolution stream's shape.
+    let state = app.state::<AppState>();
+    let shape = if which.hd.as_deref() == Some("1") {
+        None
+    } else {
+        let camera: CameraSettings = state.settings.lock().unwrap().section("camera");
+        camera.url(true).filter(|hd| *hd != url).and_then(|hd| state.streams.shape_of(&hd))
+    };
+    let body = Body::from_stream(state.streams.watch(&url, shape));
     ([(header::CONTENT_TYPE, "video/mp4"), (header::CACHE_CONTROL, "no-cache, no-store")], body).into_response()
 }
 

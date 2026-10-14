@@ -3,7 +3,8 @@ import { fmtWeight, fmtTime } from '../lib';
 
 // The weighings, newest first, sliding over the picture. Click one for the
 // photo at full size.
-export default function HistoryDrawer({ info, onClose }) {
+// standalone: filling a window of its own, rather than over the picture.
+export default function HistoryDrawer({ info, onClose, standalone = false }) {
   const [entries, setEntries] = useState([]);
   const [stats, setStats] = useState(null);
   // The id, not the entry: the entry is updated while the truck is still on
@@ -22,7 +23,7 @@ export default function HistoryDrawer({ info, onClose }) {
   const photoUrl = (e) => `http://127.0.0.1:${info.serverPort}/photo/${encodeURIComponent(e.photo)}?v=${encodeURIComponent(e.photoAt || e.plate?.readAt || e.corrected?.at || '')}`;
 
   return (
-    <div className="absolute inset-y-0 right-0 w-full max-w-md bg-gray-950/95 border-l border-gray-800 flex flex-col shadow-2xl">
+    <div className={standalone ? 'absolute inset-0 bg-gray-950 flex flex-col' : 'absolute inset-y-0 right-0 w-full max-w-md bg-gray-950/95 border-l border-gray-800 flex flex-col shadow-2xl'}>
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
         <div>
           <h2 className="font-semibold">History</h2>
@@ -30,7 +31,11 @@ export default function HistoryDrawer({ info, onClose }) {
         </div>
         <div className="flex gap-2">
           <button type="button" onClick={() => window.station.history.openFolder()} className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700">Open folder</button>
-          <button type="button" onClick={onClose} className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700">Close</button>
+          {/* Off the picture into a window that can sit beside it (Rust app). */}
+          {!standalone && window.station.window.openHistory && (
+            <button type="button" onClick={async () => { await window.station.window.openHistory(); onClose(); }} className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700" title="Open the history in a window of its own, to move beside the picture or onto another screen">Pop out</button>
+          )}
+          {!standalone && <button type="button" onClick={onClose} className="px-2 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700">Close</button>}
         </div>
       </div>
       <div className="flex-1 overflow-y-auto divide-y divide-gray-800">

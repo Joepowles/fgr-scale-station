@@ -125,6 +125,20 @@ fn start_scale(app: &AppHandle) {
         ScaleEvent::Status(status) => {
             let _ = handle.emit("scale:status", status);
         }
+        ScaleEvent::Unsettled { seconds, min, max, motion, tolerance } => {
+            let unit = handle.state::<AppState>().scale.lock().unwrap().as_ref().map(|s| s.status().unit).unwrap_or_default();
+            log(
+                &handle,
+                format!(
+                    "truck on the scale {seconds} s, not settled: {} to {} in the last readings ({} apart, settles within {}){}",
+                    scale::frames::format_weight(min, unit),
+                    scale::frames::format_weight(max, unit),
+                    scale::frames::format_weight(max - min, unit),
+                    scale::frames::format_weight(tolerance, unit),
+                    if motion { "; the scale's motion flag is on" } else { "" }
+                ),
+            );
+        }
         ScaleEvent::Arrived => {
             let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Arrived);
         }
@@ -191,6 +205,7 @@ fn apply_settings(app: &AppHandle) {
     start_scale(app);
     // The stream URLs or login may have changed; viewers reconnect to the new ones.
     app.state::<AppState>().streams.stop_all();
+    learn_hd_shape(app);
     // Load the plate models now rather than when the first truck arrives.
     if app.state::<AppState>().settings.lock().unwrap().get()["plates"]["enabled"] != false {
         let handle = app.clone();
@@ -214,6 +229,31 @@ fn apply_settings(app: &AppHandle) {
             log(app, format!("could not change starting with Windows: {err}"));
         }
     }
+}
+
+/// One frame from the full-resolution stream, for its picture size: the live
+/// view shows the small stream in that shape (issue #13); the window is told
+/// to open the stream again, which it does without the picture going away.
+fn learn_hd_shape(app: &AppHandle) {
+    let camera: camera::CameraSettings = app.state::<AppState>().settings.lock().unwrap().section("camera");
+    let (Some(sub), Some(hd)) = (camera.url(false), camera.url(true)) else { return };
+    if sub == hd {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        match camera::snapshot::capture(&hd, "", "", std::time::Duration::from_secs(15)).await {
+            Ok(jpeg) => {
+                let Some((w, h)) = camera::snapshot::jpeg_size(&jpeg) else { return };
+                let state = app.state::<AppState>();
+                if state.streams.note_shape(&hd, w.into(), h.into()) {
+                    log(&app, format!("live view: the small stream is shown at the full-resolution stream's shape, {w}x{h}"));
+                    let _ = app.emit("camera:shape", ());
+                }
+            }
+            Err(err) => log(&app, format!("live view: could not read the full-resolution stream's size ({err})")),
+        }
+    });
 }
 
 // ── Commands: what the window can call (src/station.js) ─────────────────────
@@ -485,6 +525,50 @@ fn support_open(app: AppHandle, args: Option<String>) -> Result<(), String> {
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
+// ── The history window ─────────────────────────────────────────────────────
+// The history in a window of its own (issue #12), to sit beside the camera
+// picture or on another screen rather than over it. The same window as the
+// main one, opened at #history, which shows only the history.
+
+const HISTORY_WINDOW: &str = "history";
+/// There while the history window is open, so it opens again with the app.
+const HISTORY_OPEN_FILE: &str = "history-window-open";
+/// The app is closing: the history window going too is not the user closing it.
+static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn open_history_window(app: &AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(HISTORY_WINDOW) {
+        let _ = win.unminimize();
+        let _ = win.show();
+        return win.set_focus().map_err(|e| e.to_string());
+    }
+    let dir = app.state::<AppState>().data_dir.clone();
+    let win = tauri::WebviewWindowBuilder::new(app, HISTORY_WINDOW, tauri::WebviewUrl::App("index.html#history".into()))
+        .title("Falcon Scale Station - History")
+        .inner_size(560.0, 820.0)
+        .min_inner_size(360.0, 300.0)
+        .background_color(tauri::window::Color(0, 0, 0, 255))
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+    window_state::restore(&win, &dir, window_state::HISTORY_FILE);
+    window_state::track(&win, &dir, window_state::HISTORY_FILE);
+    let _ = fs::write(dir.join(HISTORY_OPEN_FILE), "");
+    win.on_window_event(move |event| {
+        if let WindowEvent::CloseRequested { .. } = event {
+            if !QUITTING.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = fs::remove_file(dir.join(HISTORY_OPEN_FILE));
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn window_open_history(app: AppHandle) -> Result<(), String> {
+    open_history_window(&app)
+}
+
 // ── Updates ────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -565,8 +649,18 @@ pub fn run() {
                 log: Mutex::new(VecDeque::new()),
             });
             if let Some(win) = app.get_webview_window("main") {
-                window_state::restore(&win, &data_dir_for_window);
-                window_state::track(&win, &data_dir_for_window);
+                window_state::restore(&win, &data_dir_for_window, window_state::FILE);
+                window_state::track(&win, &data_dir_for_window, window_state::FILE);
+                // Closing the main window closes the app, the history window with it.
+                let main_closing = handle.clone();
+                win.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { .. } = event {
+                        QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
+                        if let Some(history) = main_closing.get_webview_window(HISTORY_WINDOW) {
+                            let _ = history.close();
+                        }
+                    }
+                });
                 // The header's full-screen button follows F11 and the like.
                 let (events, handle) = (win.clone(), handle.clone());
                 let full = std::sync::atomic::AtomicBool::new(win.is_fullscreen().unwrap_or(false));
@@ -592,6 +686,12 @@ pub fn run() {
                 Err(err) => log(&handle, format!("could not bring the Electron app's settings over: {err}")),
             }
             apply_settings(&handle);
+            // Open again if it was open when the app last closed.
+            if data_dir_for_window.join(HISTORY_OPEN_FILE).exists() {
+                if let Err(err) = open_history_window(&handle) {
+                    log(&handle, format!("could not open the history window: {err}"));
+                }
+            }
             handle.state::<AppState>().updater.start();
             prune_history_hourly(handle.clone());
             log(&handle, format!("station {} started (Rust)", app.package_info().version));
@@ -626,7 +726,8 @@ pub fn run() {
             support_open,
             update_check,
             update_status,
-            update_install
+            update_install,
+            window_open_history
         ])
         .build(tauri::generate_context!())
         .expect("error while building the station")

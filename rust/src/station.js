@@ -31,7 +31,7 @@ window.station = {
     status: call('scale_status'), test: call('scale_test'), discover: call('scale_discover'),
     onStatus: on('scale:status'), onWeighed: on('scale:weighed'), onPlate: on('scale:plate'), onDiscoverProgress: on('scale:discover-progress')
   },
-  camera: { discover: call('camera_discover'), reconnect: call('camera_reconnect'), streams: call('camera_streams'), snapshotTest: call('camera_snapshot_test'), onDiscoverProgress: on('camera:discover-progress') },
+  camera: { discover: call('camera_discover'), reconnect: call('camera_reconnect'), streams: call('camera_streams'), snapshotTest: call('camera_snapshot_test'), onDiscoverProgress: on('camera:discover-progress'), onShape: on('camera:shape') },
   plates: { readNow: call('plates_read_now'), status: call('plates_status') },
   history: {
     list: call('history_list'), stats: call('history_stats'), prune: call('history_prune'),
@@ -42,7 +42,8 @@ window.station = {
   window: {
     toggleFullscreen: async () => { const next = !(await win.isFullscreen()); await win.setFullscreen(next); return next; },
     isFullscreen: () => win.isFullscreen(),
-    onFullscreen: on('window:fullscreen')
+    onFullscreen: on('window:fullscreen'),
+    openHistory: call('window_open_history')
   },
   updates: { onReady: on('update:ready'), install: call('update_install'), check: call('update_check'), status: call('update_status'), onStatus: on('update:status'), openReleases: call('app_open_releases') }
 };

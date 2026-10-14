@@ -235,6 +235,13 @@ impl Pipeline {
             };
             taken += 1;
             let taken_at = Local::now();
+            // Its size is the live view's shape for the small stream (issue #13).
+            if let Some((w, h)) = camera::snapshot::jpeg_size(&jpeg) {
+                let streams = &self.app.state::<AppState>().streams;
+                if streams.note_shape(url, w.into(), h.into()) {
+                    let _ = self.app.emit("camera:shape", ());
+                }
+            }
             let settled = session.lock().unwrap().weighing.is_some();
             let read = if read_plates {
                 let width = camera::snapshot::jpeg_size(&jpeg).map_or(0.0, |(w, _)| f64::from(w));

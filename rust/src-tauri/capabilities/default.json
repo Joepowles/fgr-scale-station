@@ -1,8 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the station window may do: its own commands, events, and fullscreen.",
-  "windows": ["main"],
+  "description": "What the station's windows may do: their own commands, events, and fullscreen.",
+  "windows": [
+    "main",
+    "history"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-set-fullscreen",
