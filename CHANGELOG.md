@@ -2,6 +2,10 @@
 
 Newest first. The app shows this file on the Updates tab of its settings.
 
+## 0.2.4
+
+- The scale reading no longer freezes when a truck sits on the scale without settling. From 0.2.2, the note the log takes of such a truck after 15 seconds stopped the scale being read at all - the weight stuck and no more trucks weighed - until the app was closed and opened again.
+
 ## 0.2.3
 
 - "Pop out" on the history panel froze the app on Windows: nothing answered after it - Save and Send kept spinning and the history showed empty, though nothing was deleted. It opens the history window now. A PC frozen this way needs the app ended in Task Manager and opened again.

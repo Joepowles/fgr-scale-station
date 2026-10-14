@@ -87,13 +87,16 @@ pub enum ScaleEvent {
     /// A truck is rolling on; it has not settled yet.
     Arrived,
     /// A truck has been on the deck this long without settling, and why: the
-    /// weight's spread over the settling window, and the motion flag.
+    /// weight's spread over the settling window, and the motion flag. It
+    /// carries the unit: the reader's lock is held while it is handed on, so
+    /// whatever hears it must not ask the reader anything.
     Unsettled {
         seconds: i64,
         min: f64,
         max: f64,
         motion: bool,
         tolerance: f64,
+        unit: Unit,
     },
     Weighed(Weighing),
     Reweighed(Weighing),
@@ -262,7 +265,7 @@ impl ScaleCore {
         }
         if let Some((min, max, motion, tolerance)) = self.trigger.window_spread() {
             self.unsettled_said_at = Some(now);
-            (self.sink)(ScaleEvent::Unsettled { seconds: (now - arrived_at) / 1000, min, max, motion, tolerance });
+            (self.sink)(ScaleEvent::Unsettled { seconds: (now - arrived_at) / 1000, min, max, motion, tolerance, unit: self.status.unit });
         }
     }
 
@@ -532,6 +535,7 @@ mod tests {
             .filter_map(|e| if let ScaleEvent::Unsettled { seconds, min, max, motion, .. } = e { Some((*seconds, *min, *max, *motion)) } else { None })
             .collect();
         assert_eq!(said.len(), 2, "once at 15 s and again 30 s later: {said:?}");
+        assert!(events.lock().unwrap().iter().any(|e| matches!(e, ScaleEvent::Unsettled { unit: Unit::Lb, .. })));
         assert_eq!((said[0].1, said[0].2, said[0].3), (35_500.0, 35_620.0, false));
         assert!(said[0].0 >= 15 && said[1].0 >= 45);
     }

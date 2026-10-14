@@ -125,8 +125,9 @@ fn start_scale(app: &AppHandle) {
         ScaleEvent::Status(status) => {
             let _ = handle.emit("scale:status", status);
         }
-        ScaleEvent::Unsettled { seconds, min, max, motion, tolerance } => {
-            let unit = handle.state::<AppState>().scale.lock().unwrap().as_ref().map(|s| s.status().unit).unwrap_or_default();
+        // Not a word to the reader in here: this runs under its lock, and
+        // asking it for its status froze the scale reading (0.2.2, 0.2.3).
+        ScaleEvent::Unsettled { seconds, min, max, motion, tolerance, unit } => {
             log(
                 &handle,
                 format!(
