@@ -2,6 +2,10 @@
 
 Newest first. The app shows this file on the Updates tab of its settings.
 
+## 0.2.3
+
+- "Pop out" on the history panel froze the app on Windows: nothing answered after it - Save and Send kept spinning and the history showed empty, though nothing was deleted. It opens the history window now. A PC frozen this way needs the app ended in Task Manager and opened again.
+
 ## 0.2.2
 
 - The history opens in a window of its own: "Pop out" on the history panel. Put it beside the camera picture or on another screen; it keeps up as trucks are weighed, opens where it was left, and opens again with the app if it was open when the app closed.

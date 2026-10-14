@@ -1342,7 +1342,7 @@ dependencies = [
 
 [[package]]
 name = "falcon-scale-station"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "ab_glyph",
  "axum",

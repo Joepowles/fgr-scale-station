@@ -564,8 +564,11 @@ fn open_history_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Async, and it must stay so: a window built in a synchronous command
+/// deadlocks the main thread on Windows (WebView2), and the whole app froze -
+/// every call from the window waiting for ever, the history showing empty.
 #[tauri::command]
-fn window_open_history(app: AppHandle) -> Result<(), String> {
+async fn window_open_history(app: AppHandle) -> Result<(), String> {
     open_history_window(&app)
 }
 
