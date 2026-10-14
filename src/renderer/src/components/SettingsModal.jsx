@@ -5,6 +5,7 @@ import ScaleTab from './ScaleTab';
 import HistoryTab from './HistoryTab';
 import ChangelogTab from './ChangelogTab';
 import SupportTab from './SupportTab';
+import AlertsTab from './AlertsTab';
 import { btnPrimary, btn } from '../lib';
 
 const TABS = [
@@ -12,6 +13,8 @@ const TABS = [
   { key: 'plates', label: 'Plates' },
   { key: 'scale', label: 'Scale' },
   { key: 'history', label: 'History' },
+  // The Rust app's; shown when the settings have an alerts section.
+  { key: 'alerts', label: 'Alerts', when: (d) => !!d.alerts && !!window.station.alerts },
   { key: 'changelog', label: 'Updates' },
   { key: 'support', label: 'Bug report' }
 ];
@@ -52,7 +55,7 @@ export default function SettingsModal({ settings, info, onSaved, onClose }) {
           <button type="button" onClick={onClose} className="text-gray-400 hover:text-white px-2">✕</button>
         </div>
         <div className="flex border-b border-gray-800 bg-gray-950 px-2">
-          {TABS.map((t) => (
+          {TABS.filter((t) => !t.when || t.when(draft)).map((t) => (
             <button key={t.key} type="button" onClick={() => setTab(t.key)} className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px ${tab === t.key ? 'border-emerald-400 text-emerald-300' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
               {t.label}
             </button>
@@ -63,6 +66,7 @@ export default function SettingsModal({ settings, info, onSaved, onClose }) {
           {tab === 'plates' && <PlatesTab draft={draft} patch={patch} info={info} />}
           {tab === 'scale' && <ScaleTab draft={draft} patch={patch} info={info} />}
           {tab === 'history' && <HistoryTab draft={draft} patch={patch} info={info} />}
+          {tab === 'alerts' && <AlertsTab draft={draft} patch={patch} />}
           {tab === 'changelog' && <ChangelogTab draft={draft} patch={patch} info={info} />}
           {tab === 'support' && <SupportTab draft={draft} patch={patch} info={info} />}
         </div>

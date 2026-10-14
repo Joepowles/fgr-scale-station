@@ -13,6 +13,12 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Map, Value};
 
 pub fn defaults() -> Value {
+    let mut d = base_defaults();
+    d["alerts"] = crate::alerts::defaults_json();
+    d
+}
+
+fn base_defaults() -> Value {
     json!({
         "camera": {
             "name": "Scale",
@@ -72,7 +78,8 @@ pub fn defaults() -> Value {
         "support": {
             "relayUrl": "https://scale-station-reports.joepowles.workers.dev",
             "repo": "Joepowles/fgr-scale-station",
-            "githubToken": ""
+            "githubToken": "",
+            "autoReport": true
         },
         "meta": { "version": 4 }
     })

@@ -1,6 +1,6 @@
 [package]
 name = "falcon-scale-station"
-version = "0.2.4"
+version = "0.2.5"
 description = "Falcon Scale Station, with the main process in Rust"
 authors = ["Falcon Green Resources"]
 edition = "2021"
@@ -16,7 +16,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["net", "time", "io-util", "macros", "rt-multi-thread", "sync", "process"] }
@@ -40,6 +40,7 @@ tauri-plugin-single-instance = "2.5.3"
 tauri-plugin-autostart = "2.7.0"
 tauri-plugin-clipboard-manager = "2.4.2"
 sha2 = "0.11.1"
+tauri-plugin-notification = "2.7.0"
 
 [profile.release]
 codegen-units = 1

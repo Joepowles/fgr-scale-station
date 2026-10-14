@@ -150,6 +150,14 @@ export default function CameraView({ settings, info, scale, display }) {
   // until the new one plays.
   useEffect(() => window.station.camera.onShape?.(() => setTick((t) => t + 1)), []);
 
+  // Saving the settings stops the camera streams (the address or login may
+  // have changed): open a new one at once rather than wait to find it gone.
+  const savedOnce = useRef(false);
+  useEffect(() => {
+    if (savedOnce.current) setTick((t) => t + 1);
+    savedOnce.current = true;
+  }, [settings]);
+
   // A long session drifts; reconnect every half hour like the site's cards do.
   useEffect(() => {
     const t = setInterval(() => setTick((x) => x + 1), 30 * 60 * 1000);

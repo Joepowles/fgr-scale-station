@@ -2,6 +2,15 @@
 
 Newest first. The app shows this file on the Updates tab of its settings.
 
+## 0.2.5
+
+- Alerts, on a new Alerts tab in Settings. Add as many as you like, each a "when" and a "then". When: something comes onto the scale (over a weight you pick, 500 lb say, well under the history's), a truck is weighed (any, or only over or under weights you set, for overweight or light loads), the scale is clear again, a plate is read (any, only plates on a list, or only plates not on it), no plate could be read, a truck sits on the scale without settling, something moves in the camera picture, or the scale or the camera stops sending. Then: a sound (chime, bell, beep, double beep, alarm, or a sound file of your own) at its own volume, once, for some seconds or until dismissed; a banner over the picture; a Windows notification. Each has a Test button and a gap before it can go off again.
+- Quiet hours (times and days; silence the sounds, or everything), an overall volume, mute for 15 minutes, an hour or four from the Alerts tab or the tray icon, and an icon in the system tray that brings the window forward.
+- Out of the box one alert is on: a chime when a truck is weighed. The others are there, switched off, to turn on as wanted.
+- Crash and freeze reports send themselves. A watchdog checks every few seconds that the window, the scale reader and the work behind them are still answering; if one stops, a report with the log goes up, a notification says so, and the app restarts itself (at most three times an hour). A crash is reported the same way, and so is a run that ended without closing, on the next start. "Send crash reports by themselves" on the Bug report tab turns it off.
+- The window no longer waits on the scale reader, so a stuck reader cannot freeze the whole window.
+- After Settings are saved the camera picture reconnects at once, instead of saying "Camera not responding" for a few seconds.
+
 ## 0.2.4
 
 - The scale reading no longer freezes when a truck sits on the scale without settling. From 0.2.2, the note the log takes of such a truck after 15 seconds stopped the scale being read at all - the weight stuck and no more trucks weighed - until the app was closed and opened again.

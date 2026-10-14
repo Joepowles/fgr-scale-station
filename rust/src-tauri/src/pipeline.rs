@@ -278,6 +278,14 @@ impl Pipeline {
                 tokio::time::sleep(rest).await;
             }
         }
+        // A weighed truck whose frames are over without a plate.
+        let no_plate = {
+            let s = session.lock().unwrap();
+            s.truck.plate().is_none().then_some(()).and(s.weighing.clone())
+        };
+        if let (Some(w), true) = (no_plate, read_plates) {
+            crate::alerts_app::feed(&self.app, crate::alerts::Input::NoPlate { weight: w.weight, unit: w.unit.to_string() });
+        }
         let summary = {
             let s = session.lock().unwrap();
             let plate = s.truck.plate().map_or("no plate".to_string(), |p| format!("plate {} ({:.0}%, {} frames)", p.text, p.confidence * 100.0, p.frames));
@@ -404,6 +412,9 @@ impl Pipeline {
             Err(err) => self.log(format!("could not write the history: {err}")),
         }
         if now.plate != written.plate {
+            if let Some(text) = &now.plate {
+                crate::alerts_app::feed(&self.app, crate::alerts::Input::Plate { text: text.clone() });
+            }
             if let Some(plate) = plate_json {
                 if let Some(scale) = state.scale.lock().unwrap().as_ref() {
                     scale.record_plate(plate.clone());

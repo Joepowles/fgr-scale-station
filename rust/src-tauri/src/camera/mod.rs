@@ -3,6 +3,7 @@
 pub mod burst;
 pub mod discovery;
 pub mod ffmpeg;
+pub mod motion;
 pub mod onvif;
 pub mod rtsp;
 pub mod snapshot;

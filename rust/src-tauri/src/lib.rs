@@ -5,8 +5,11 @@
 //! picture and writes it to the history; the window shows the live picture
 //! with the weight and plate over it.
 
+mod alerts;
+mod alerts_app;
 mod bug_report;
 mod camera;
+mod crash;
 mod electron_import;
 mod history;
 mod pipeline;
@@ -58,6 +61,7 @@ pub(crate) struct AppState {
     pub(crate) streams: camera::stream::Streams,
     pub(crate) plates: plates::PlateReader,
     updater: std::sync::Arc<updater::Updater>,
+    pub(crate) alerts: alerts_app::Alerts,
     log: Mutex<VecDeque<String>>,
 }
 
@@ -142,10 +146,12 @@ fn start_scale(app: &AppHandle) {
         }
         ScaleEvent::Arrived => {
             let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Arrived);
+            alerts_app::feed(&handle, alerts::Input::Arrived);
         }
         ScaleEvent::Weighed(w) => {
             log(&handle, format!("weighed {} {}", w.weight, w.unit));
             let _ = handle.emit("scale:weighed", &w);
+            alerts_app::feed(&handle, alerts::Input::Weighed { weight: w.weight, unit: w.unit.to_string() });
             let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Weighed(w));
         }
         ScaleEvent::Reweighed(w) => {
@@ -156,6 +162,7 @@ fn start_scale(app: &AppHandle) {
         ScaleEvent::Cleared { .. } => {
             log(&handle, "deck clear");
             let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Cleared);
+            alerts_app::feed(&handle, alerts::Input::Cleared);
         }
     });
     *slot = Some(ScaleReader::start(&settings, previous.as_ref(), sink));
@@ -221,6 +228,7 @@ fn apply_settings(app: &AppHandle) {
         }
     }
     app.state::<AppState>().updater.settings_changed();
+    alerts_app::apply(app);
     // Start with Windows: a Run entry for this user, as Electron's login item.
     let start_with_windows = window["startWithWindows"].as_bool().unwrap_or(false);
     let autolaunch = app.autolaunch();
@@ -298,8 +306,14 @@ fn settings_defaults() -> Value {
     settings::defaults()
 }
 
+/// Async, so the window never waits on the scale reader: a stuck reader froze
+/// the whole window when it asked (0.2.3, Test connection).
 #[tauri::command]
-fn scale_status(state: State<AppState>) -> Option<ScaleStatus> {
+async fn scale_status(state: State<'_, AppState>) -> Result<Option<ScaleStatus>, String> {
+    Ok(scale_status_now(&state))
+}
+
+fn scale_status_now(state: &AppState) -> Option<ScaleStatus> {
     state.scale.lock().unwrap().as_ref().map(ScaleReader::status)
 }
 
@@ -479,6 +493,40 @@ fn build_bug_report(app: &AppHandle, description: &str, idea: bool) -> bug_repor
     })
 }
 
+/// A report for crash.rs: built from whatever can be had without waiting,
+/// since part of the app may be stuck holding a lock.
+pub(crate) fn careful_report(app: &AppHandle, description: &str) -> bug_report::Report {
+    let state = app.state::<AppState>();
+    let log = fs::read_to_string(state.log_file()).unwrap_or_default();
+    let history: Vec<Value> = state
+        .history
+        .try_lock()
+        .ok()
+        .and_then(|h| h.as_ref().map(|h| h.list(bug_report::HISTORY_ENTRIES)))
+        .unwrap_or_default()
+        .into_iter()
+        .map(Value::Object)
+        .collect();
+    let scale = state.scale.try_lock().ok().and_then(|s| s.as_ref().and_then(|s| s.try_status())).map(|s| serde_json::to_value(s).unwrap_or_default());
+    let settings = state.settings.try_lock().map(|s| s.get().clone()).unwrap_or_default();
+    let info = json!({
+        "version": app.package_info().version.to_string(),
+        "ffmpeg": camera::ffmpeg::available(),
+        "plateReader": { "installed": state.plates.installed() },
+    });
+    bug_report::build(&bug_report::Input {
+        description,
+        info: &info,
+        settings: &settings,
+        log: &log,
+        history: &history,
+        scale: scale.as_ref(),
+        machine: bug_report::machine(),
+        idea: false,
+        now: chrono::Utc::now(),
+    })
+}
+
 #[tauri::command]
 async fn support_send(app: AppHandle, args: Option<ReportArgs>) -> Result<bug_report::Issue, String> {
     let args = args.unwrap_or_default();
@@ -573,6 +621,35 @@ async fn window_open_history(app: AppHandle) -> Result<(), String> {
     open_history_window(&app)
 }
 
+// ── Alerts ─────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn alerts_test(app: AppHandle, args: alerts::Rule) {
+    alerts_app::test(&app, &args);
+}
+
+/// Mutes alerts for `args` minutes; 0 or none unmutes.
+#[tauri::command]
+fn alerts_mute(app: AppHandle, args: Option<f64>) -> Value {
+    let minutes = args.unwrap_or(0.0);
+    alerts_app::mute(&app, (minutes > 0.0).then(|| reader::now_ms() + (minutes * 60_000.0) as i64))
+}
+
+#[tauri::command]
+fn alerts_status(app: AppHandle) -> Value {
+    alerts_app::status(&app)
+}
+
+/// A sound file for an alert: WAV, MP3 or OGG.
+#[tauri::command]
+async fn alerts_choose_sound(app: AppHandle) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().set_title("A sound for this alert").add_filter("Sound", &["wav", "mp3", "ogg", "m4a"]).pick_file(move |file| {
+        let _ = tx.send(file);
+    });
+    rx.await.ok().flatten().and_then(|f| f.into_path().ok()).map(|p| p.display().to_string())
+}
+
 // ── Updates ────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -613,6 +690,9 @@ fn log_recent(state: State<AppState>) -> Vec<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // A copy the watchdog restarted waits for the frozen one to be gone.
+    crash::wait_if_restarted();
+    crash::install_panic_hook();
     tauri::Builder::default()
         // One copy at a time, registered first as the plugin asks. A second
         // copy reads the same scale, so every truck was weighed and logged
@@ -626,6 +706,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -650,6 +731,7 @@ pub fn run() {
                 history: Mutex::new(None),
                 pipeline: pipeline::start(handle.clone()),
                 updater: updater::Updater::new(&handle, app.path().app_local_data_dir()?.join("updates")),
+                alerts: alerts_app::Alerts::new(),
                 log: Mutex::new(VecDeque::new()),
             });
             if let Some(win) = app.get_webview_window("main") {
@@ -689,7 +771,12 @@ pub fn run() {
                 Ok(None) => {}
                 Err(err) => log(&handle, format!("could not bring the Electron app's settings over: {err}")),
             }
+            crash::start(&handle, &data_dir_for_window);
+            if let Err(err) = alerts_app::build_tray(&handle) {
+                log(&handle, format!("could not make the tray icon: {err}"));
+            }
             apply_settings(&handle);
+            alerts_app::start_ticking(handle.clone());
             // Open again if it was open when the app last closed.
             if data_dir_for_window.join(HISTORY_OPEN_FILE).exists() {
                 if let Err(err) = open_history_window(&handle) {
@@ -731,7 +818,11 @@ pub fn run() {
             update_check,
             update_status,
             update_install,
-            window_open_history
+            window_open_history,
+            alerts_test,
+            alerts_mute,
+            alerts_status,
+            alerts_choose_sound
         ])
         .build(tauri::generate_context!())
         .expect("error while building the station")
@@ -741,6 +832,7 @@ pub fn run() {
                 // Electron app's did; it is opened again next time as usual.
                 release_install_folder(app);
                 app.state::<AppState>().updater.install(false);
+                crash::clean_exit(&app.state::<AppState>().data_dir);
             }
         });
 }

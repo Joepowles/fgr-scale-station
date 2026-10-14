@@ -316,6 +316,18 @@ impl ScaleReader {
         self.lock().status().clone()
     }
 
+    /// The status if it can be had without waiting: for the crash reports,
+    /// which must not wait on a reader that may be stuck.
+    pub fn try_status(&self) -> Option<ScaleStatus> {
+        self.core.try_lock().ok().map(|c| c.status().clone())
+    }
+
+    /// Whether the reader is free now. It holds its lock only for a moment
+    /// per reading; held for long, it is stuck (the watchdog asks).
+    pub fn answers(&self) -> bool {
+        self.core.try_lock().is_ok()
+    }
+
     #[allow(dead_code)] // the weighing pipeline is not ported yet
     pub fn loaded(&self) -> bool {
         self.lock().loaded()

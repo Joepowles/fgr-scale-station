@@ -4,6 +4,7 @@
 //!   http://127.0.0.1:<port>/stream?hd=1   fragmented MP4 of the chosen stream
 //!   http://127.0.0.1:<port>/snapshot?hd=1 one JPEG
 //!   http://127.0.0.1:<port>/photo/<name>  a history photo
+//!   http://127.0.0.1:<port>/sound?path=…  an alert's own sound file
 //!
 //! Bound to 127.0.0.1 on a port the OS picks, so nothing off this PC can
 //! reach it.
@@ -27,7 +28,12 @@ pub fn start(app: AppHandle) -> std::io::Result<u16> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
-    let router = Router::new().route("/stream", get(stream)).route("/snapshot", get(snapshot)).route("/photo/{name}", get(photo)).with_state(app);
+    let router = Router::new()
+        .route("/stream", get(stream))
+        .route("/snapshot", get(snapshot))
+        .route("/photo/{name}", get(photo))
+        .route("/sound", get(sound))
+        .with_state(app);
     tauri::async_runtime::spawn(async move {
         let listener = tokio::net::TcpListener::from_std(listener).expect("listener from std");
         let _ = axum::serve(listener, router).await;
@@ -80,6 +86,28 @@ async fn photo(State(app): State<AppHandle>, Path(name): Path<String>) -> Respon
     let Some(file) = file else { return StatusCode::NOT_FOUND.into_response() };
     match tokio::fs::read(file).await {
         Ok(jpeg) => ([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "no-store")], jpeg).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SoundFile {
+    path: String,
+}
+
+/// An alert's own sound, chosen on the Alerts tab. Sound files only, by
+/// their name: this is no way to read any other file on the PC.
+async fn sound(Query(file): Query<SoundFile>) -> Response {
+    let path = std::path::PathBuf::from(&file.path);
+    let kind = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("wav") => "audio/wav",
+        Some("mp3") => "audio/mpeg",
+        Some("ogg") => "audio/ogg",
+        Some("m4a") => "audio/mp4",
+        _ => return StatusCode::FORBIDDEN.into_response(),
+    };
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, kind)], bytes).into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }

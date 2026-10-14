@@ -45,5 +45,10 @@ window.station = {
     onFullscreen: on('window:fullscreen'),
     openHistory: call('window_open_history')
   },
+  alerts: {
+    onAlert: on('alert'), onStatus: on('alerts:status'),
+    test: call('alerts_test'), mute: call('alerts_mute'), status: call('alerts_status'), chooseSound: call('alerts_choose_sound'),
+    soundUrl: (path) => window.station.info().then((i) => `http://127.0.0.1:${i.serverPort}/sound?path=${encodeURIComponent(path)}`)
+  },
   updates: { onReady: on('update:ready'), install: call('update_install'), check: call('update_check'), status: call('update_status'), onStatus: on('update:status'), openReleases: call('app_open_releases') }
 };

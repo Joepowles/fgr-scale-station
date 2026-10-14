@@ -68,6 +68,12 @@ export default function SupportTab({ draft, patch, info }) {
           </span>
         )}
       </div>
+      {sup.autoReport !== undefined && (
+        <label className="flex items-start gap-2 text-xs text-gray-300 border-t border-gray-800 pt-4">
+          <input type="checkbox" className="mt-0.5" checked={sup.autoReport !== false} onChange={(e) => patch('support', { autoReport: e.target.checked })} />
+          <span>Send crash reports by themselves<span className="block text-[11px] text-gray-500">If the app crashes or stops working properly, a report with its log goes up at once, without anyone pressing anything; after a freeze the app also restarts itself. Same details as a report sent from here.</span></span>
+        </label>
+      )}
       <section className="border-t border-gray-800 pt-4 grid grid-cols-1 md:grid-cols-2 gap-5">
         <label className="block text-xs text-gray-400">GitHub token (optional)
           <input type="password" className={`${inputClass} mono mt-1`} value={sup.githubToken || ''} onChange={(e) => patch('support', { githubToken: e.target.value.trim() })} placeholder="Leave empty: reports go through the relay" autoComplete="off" />

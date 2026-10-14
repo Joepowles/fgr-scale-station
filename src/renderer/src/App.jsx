@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import CameraView from './components/CameraView';
 import SettingsModal from './components/SettingsModal';
 import HistoryDrawer from './components/HistoryDrawer';
+import AlertCenter from './components/AlertCenter';
 import { fmtWeight } from './lib';
 
 // The whole window: the camera with its overlays, a thin header, and two
@@ -117,6 +118,8 @@ export default function App() {
           </div>
         )}
         {showHistory && <HistoryDrawer info={info} onClose={() => setShowHistory(false)} />}
+        {/* The Rust app's alerts: sounds, banners, the muted chip. */}
+        {window.station.alerts && <AlertCenter />}
       </div>
 
       {showSettings && (
