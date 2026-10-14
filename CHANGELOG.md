@@ -2,6 +2,10 @@
 
 Newest first. The app shows this file on the Updates tab of its settings.
 
+## 0.2.2
+
+- A truck that pulls on right behind the one before is weighed. The app waited for the scale to read empty for two seconds before it would weigh another truck; trucks queued nose to tail leave it empty for less than that, so the next one was missed if it was lighter, or taken for more of the one before if it was heavier. Two readings in a row under the clear weight (1,000 lb unless changed on the Scale tab) now do.
+
 ## 0.2.1
 
 - The Bug report tab takes ideas as well as problems: pick Problem or Idea at the top. An idea goes up marked as one, so requests are kept apart from things that are broken.

@@ -26,6 +26,10 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 pub const STX: u8 = 0x02;
+/// How long the deck must read clear before the next truck is weighed: this
+/// many readings in a row, over at least this long (see WeighingTrigger).
+pub const CLEAR_READINGS: u32 = 2;
+pub const CLEAR_MS: i64 = 400;
 
 /// One parsed frame. `unit` is None when the indicator does not say.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -235,10 +239,14 @@ struct Sample {
 /// the weight has to sit inside a tolerance band for `stable_seconds`, with no
 /// motion flag anywhere in that window, and be at or above `min_weight`. That
 /// fires once. It does not fire again until the deck has gone back under
-/// `clear_weight`: a truck shuffling forward a few feet is the same truck. The
-/// deck has to read clear for the whole window too: one low reading - a
-/// corrupted frame, a glitch on the line - is not a truck leaving, and must
-/// not set up a second weighing of the truck still sitting there.
+/// `clear_weight`: a truck shuffling forward a few feet is the same truck. One
+/// low reading - a corrupted frame, a glitch on the line - is not a truck
+/// leaving, and must not set up a second weighing of the truck still sitting
+/// there, so the deck has to read clear for `CLEAR_READINGS` readings in a
+/// row over at least `CLEAR_MS`. Not for the whole settling window: trucks
+/// queued nose to tail leave the deck clear for a moment only, and waiting
+/// two seconds missed the next truck (WC-Office, 2026-10-14, 35,580 lb) -
+/// or took it for more of the one before.
 ///
 /// But a truck creeping on slowly can settle with only its front axle on the
 /// deck, and a tractor can settle before its trailer is on. So while the deck
@@ -255,6 +263,8 @@ pub struct WeighingTrigger {
     pub armed: bool,
     /// Arrived has been raised for what is on the deck now.
     pub arrived: bool,
+    /// The readings in a row at or under the clear weight, and when they began.
+    clear_run: Option<(u32, i64)>,
     pub settled: bool,
     pub last_weighing: Option<LastWeighing>,
 }
@@ -270,6 +280,7 @@ impl WeighingTrigger {
             window: VecDeque::new(),
             armed: true,
             arrived: false,
+            clear_run: None,
             settled: false,
             last_weighing: None,
         }
@@ -293,8 +304,10 @@ impl WeighingTrigger {
         self.settled = settled;
 
         let weight = reading.weight;
+        self.clear_run = if weight <= self.clear_weight { Some(self.clear_run.map_or((1, at), |(n, since)| (n + 1, since))) } else { None };
+        let deck_clear = self.clear_run.is_some_and(|(n, since)| n >= CLEAR_READINGS && at - since >= CLEAR_MS);
         if !self.armed {
-            if spans_window && max <= self.clear_weight {
+            if deck_clear {
                 self.armed = true;
                 self.arrived = false;
                 return Some(TriggerEvent::Cleared { weight, at });
@@ -318,7 +331,7 @@ impl WeighingTrigger {
             return Some(TriggerEvent::Arrived { weight, at });
         }
         // A truck that came on and backed off again without settling.
-        if self.arrived && spans_window && max <= self.clear_weight {
+        if self.arrived && deck_clear {
             self.arrived = false;
             return Some(TriggerEvent::Cleared { weight, at });
         }
@@ -527,6 +540,43 @@ mod tests {
         assert!(t.trigger.armed); // the next truck is weighed as usual
         t.feed_n(50, |_| 31000.0, false);
         assert_eq!(t.every_event(), ["arrived", "cleared", "arrived", "weighed"]);
+    }
+
+    #[test]
+    fn trucks_nose_to_tail_are_each_weighed_on_a_slow_indicator() {
+        // About 2.2 readings a second, near what FALCON-HE's indicator sends.
+        let mut t = Rig::new(4000.0, 2.0, 1000);
+        let step = 450;
+        let feed = |t: &mut Rig, n: usize, weight: f64, motion: bool| {
+            for _ in 0..n {
+                let reading = Reading { weight, unit: Some(Unit::Lb), gross: true, motion, valid: true, raw: String::new() };
+                if let Some(e) = t.trigger.push(&reading, t.now) {
+                    t.events.push(e);
+                }
+                t.now += step;
+            }
+        };
+        feed(&mut t, 10, 0.0, false);
+        feed(&mut t, 4, 30000.0, true);
+        feed(&mut t, 8, 41980.0, false); // the first truck, 41,980 lb
+        feed(&mut t, 3, 15000.0, true); // driving off
+        feed(&mut t, 2, 20.0, false); // under a second of empty deck
+        feed(&mut t, 4, 20000.0, true); // the next one already rolling on
+        feed(&mut t, 8, 35580.0, false); // 35,580 lb: lighter, so it was lost
+        assert_eq!(t.kinds(), ["weighed", "cleared", "weighed"]);
+        assert_eq!(t.weight_of(2), 35580.0);
+    }
+
+    #[test]
+    fn one_low_reading_under_a_truck_is_not_the_truck_leaving() {
+        let mut t = Rig::new(4000.0, 2.0, 1000);
+        t.feed_n(40, |_| 140.0, false);
+        t.feed_n(50, |_| 41980.0, false);
+        t.feed(0.0, false); // a corrupted frame
+        t.feed_n(5, |_| 41980.0, false);
+        t.feed_n(3, |_| 0.0, false); // three readings, 0.1 s: still a glitch
+        t.feed_n(50, |_| 41980.0, false);
+        assert_eq!(t.kinds(), ["weighed"]);
     }
 
     #[test]
