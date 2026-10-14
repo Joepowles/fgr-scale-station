@@ -9,13 +9,17 @@ import { btn, inputClass } from '../lib';
 export default function SupportTab({ draft, patch, info }) {
   const sup = draft.support || {};
   const [description, setDescription] = useState('');
+  // A problem, or an idea for something better: labelled apart on GitHub, so
+  // requests do not bury faults.
+  const [kind, setKind] = useState('problem');
+  const idea = kind === 'idea';
   const [busy, setBusy] = useState('');
   const [result, setResult] = useState(null);
 
   const send = async () => {
     setBusy('send'); setResult(null);
     try {
-      const issue = await window.station.support.send({ description, repo: sup.repo, token: sup.githubToken });
+      const issue = await window.station.support.send({ description, kind, repo: sup.repo, token: sup.githubToken });
       setResult({ ok: true, text: `Sent as issue #${issue.number}.`, url: issue.url });
       setDescription('');
     } catch (err) {
@@ -25,7 +29,7 @@ export default function SupportTab({ draft, patch, info }) {
   const save = async () => {
     setBusy('save'); setResult(null);
     try {
-      const file = await window.station.support.save({ description });
+      const file = await window.station.support.save({ description, kind });
       if (file) setResult({ ok: true, text: `Saved to ${file}. Send that file along.` });
     } catch (err) {
       setResult({ ok: false, text: err.message });
@@ -35,12 +39,22 @@ export default function SupportTab({ draft, patch, info }) {
   return (
     <div className="space-y-5">
       <div className="rounded-md border border-emerald-900 bg-emerald-950/40 p-3">
-        <h3 className="text-sm font-semibold text-emerald-200">Bug report</h3>
-        <p className="text-xs text-emerald-300/80 mt-0.5">Say what happened and when. The report goes with the app's version, its settings (passwords removed), the last 40 weighings and the recent log, so the problem can be looked at without anyone coming to this PC.</p>
+        <h3 className="text-sm font-semibold text-emerald-200">Problems and ideas</h3>
+        <p className="text-xs text-emerald-300/80 mt-0.5">Say what happened and when, or what would make the app better. Either goes with the app's version, its settings (passwords removed), the last 40 weighings and the recent log, so it can be looked at without anyone coming to this PC.</p>
       </div>
-      <label className="block text-xs text-gray-400">What happened?
+      <div className="flex gap-1.5" role="radiogroup" aria-label="Kind of report">
+        {[['problem', 'Problem', 'Something is not working'], ['idea', 'Idea', 'Something that would make the app better']].map(([key, label, hint]) => (
+          <button key={key} type="button" role="radio" aria-checked={kind === key} onClick={() => setKind(key)} title={hint}
+            className={`px-3 py-1.5 text-sm rounded-md border ${kind === key ? 'bg-gray-100 text-black border-gray-100' : 'bg-gray-800 text-gray-300 border-gray-600 hover:bg-gray-700'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <label className="block text-xs text-gray-400">{idea ? 'What would make it better?' : 'What happened?'}
         <textarea className={`${inputClass} mt-1 min-h-[140px]`} value={description} onChange={(e) => setDescription(e.target.value)}
-          placeholder={'For example: a truck pulled on at about 11:30 and the history shows it eleven times at 32,000 lb.'} />
+          placeholder={idea
+            ? 'For example: open the history in its own window, so it can sit beside the camera picture.'
+            : 'For example: a truck pulled on at about 11:30 and the history shows it eleven times at 32,000 lb.'} />
       </label>
       <div className="flex items-center gap-2 flex-wrap">
         <button type="button" onClick={send} disabled={!!busy || !description.trim()} className="px-3 py-1.5 text-sm rounded-md bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-50 flex items-center gap-2">

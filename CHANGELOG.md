@@ -2,6 +2,10 @@
 
 Newest first. The app shows this file on the Updates tab of its settings.
 
+## 0.2.1
+
+- The Bug report tab takes ideas as well as problems: pick Problem or Idea at the top. An idea goes up marked as one, so requests are kept apart from things that are broken.
+
 ## 0.2.0
 
 - The plate is read from the moment a truck rolls onto the scale, not only once it has settled: a truck that pulls up too far for its plate to be seen is still read on the way in. Pictures are taken from the full-resolution stream about once a second until the truck leaves. The plate kept is the one read most surely across all of them, so one misread close-up does not win over several agreeing reads.

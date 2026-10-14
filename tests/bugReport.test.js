@@ -99,3 +99,15 @@ test('a token on the tab goes straight to GitHub; otherwise the relay built into
   await sendReport({ support: { relayUrl: 'https://mine.example' }, builtinRelayUrl: 'https://r.example', title: 'T', body: 'B', fetchFn });
   assert.deepEqual(urls, ['https://api.github.com/repos/a/b/issues', 'https://r.example/report', 'https://mine.example/report']);
 });
+
+test('an idea is titled, headed and labelled as one; a problem as a bug', async () => {
+  const idea = buildReport({ description: 'Open the history in its own window', kind: 'idea', settings: {} });
+  assert.equal(idea.title, 'Idea: Open the history in its own window');
+  assert.equal(idea.body.startsWith('## The idea\n\nOpen the history in its own window'), true);
+  assert.deepEqual(idea.labels, ['from-the-yard', 'enhancement']);
+  assert.deepEqual(buildReport({ description: 'Scale stuck', settings: {} }).labels, ['from-the-yard', 'bug']);
+  const bodies = [];
+  const fetchFn = async (_url, opts) => { bodies.push(JSON.parse(opts.body)); return { ok: true, status: 201, text: async () => '{"number":1,"url":"u"}' }; };
+  await sendReport({ builtinRelayUrl: 'https://r.example', title: idea.title, body: idea.body, labels: idea.labels, fetchFn });
+  assert.deepEqual(bodies[0].labels, ['from-the-yard', 'enhancement']);
+});

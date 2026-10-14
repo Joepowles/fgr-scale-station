@@ -24,6 +24,9 @@ const LOG_TAIL_CHARS: usize = 40_000;
 pub const HISTORY_ENTRIES: usize = 40;
 const TIMEOUT: Duration = Duration::from_secs(30);
 const LABEL: &str = "from-the-yard";
+/// A problem or an idea, labelled apart so requests do not bury faults.
+const PROBLEM_LABELS: [&str; 2] = [LABEL, "bug"];
+const IDEA_LABELS: [&str; 2] = [LABEL, "enhancement"];
 
 static SECRET_KEYS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)password|token|secret|passwd").unwrap());
 static REPO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[\w.-]+/[\w.-]+$").unwrap());
@@ -73,6 +76,7 @@ fn after_line_break(text: &str, cut: usize) -> &str {
 pub struct Report {
     pub title: String,
     pub body: String,
+    pub labels: Vec<&'static str>,
 }
 
 /// What a report is made of. `info` is the window's app_info; `scale` the
@@ -85,11 +89,13 @@ pub struct Input<'a> {
     pub history: &'a [Value],
     pub scale: Option<&'a Value>,
     pub machine: String,
+    /// An idea for something better, rather than a problem.
+    pub idea: bool,
     pub now: DateTime<Utc>,
 }
 
 pub fn build(input: &Input) -> Report {
-    let title = title_for(input.description);
+    let title = if input.idea { title_for(&format!("Idea: {}", input.description.trim())) } else { title_for(input.description) };
     let info = input.info;
     let flag = |v: &Value| v.as_bool().unwrap_or(false);
     let scale = match input.scale {
@@ -145,7 +151,7 @@ pub fn build(input: &Input) -> Report {
 
     let assemble = |tail: &str| {
         [
-            "## What happened".to_string(),
+            if input.idea { "## The idea" } else { "## What happened" }.to_string(),
             String::new(),
             if description.is_empty() { "_(nothing typed)_".to_string() } else { description.to_string() },
             String::new(),
@@ -187,7 +193,7 @@ pub fn build(input: &Input) -> Report {
         }
         body = format!("{}\n…(cut)", &body[..cut]);
     }
-    Report { title, body }
+    Report { title, body, labels: if input.idea { IDEA_LABELS.to_vec() } else { PROBLEM_LABELS.to_vec() } }
 }
 
 /// This PC, as the report's Machine row: name, system and processor.
@@ -238,7 +244,7 @@ fn explain_status(status: u16, text: &str) -> String {
 }
 
 /// Opens the issue on GitHub with a token.
-pub async fn file_issue(post: &Post, repo: &str, token: &str, title: &str, body: &str) -> Result<Issue, String> {
+pub async fn file_issue(post: &Post, repo: &str, token: &str, title: &str, body: &str, labels: &[&str]) -> Result<Issue, String> {
     let name = repo.trim().trim_start_matches("https://github.com/").trim_start_matches("http://github.com/");
     let name = name.trim_end_matches('/').trim_end_matches(".git").trim_end_matches('/');
     if !REPO.is_match(name) {
@@ -255,7 +261,7 @@ pub async fn file_issue(post: &Post, repo: &str, token: &str, title: &str, body:
             ("X-GitHub-Api-Version", "2022-11-28".to_string()),
         ]
     };
-    let mut labels = vec![LABEL];
+    let mut labels = labels.to_vec();
     loop {
         let payload = json!({ "title": title, "body": body, "labels": labels }).to_string();
         let (status, text) = post(url.clone(), headers(), payload).await.map_err(|e| {
@@ -279,12 +285,12 @@ pub async fn file_issue(post: &Post, repo: &str, token: &str, title: &str, body:
 }
 
 /// Sends the report through the relay, which holds the GitHub token.
-pub async fn send_via_relay(post: &Post, relay_url: &str, title: &str, body: &str) -> Result<Issue, String> {
+pub async fn send_via_relay(post: &Post, relay_url: &str, title: &str, body: &str, labels: &[&str]) -> Result<Issue, String> {
     let base = relay_url.trim().trim_end_matches('/');
     if !base.starts_with("https://") {
         return Err("This build has no bug report relay or GitHub token in it. Enter a token on the Bug report tab, or save the report to a file.".into());
     }
-    let payload = json!({ "title": title, "body": body, "labels": [LABEL] }).to_string();
+    let payload = json!({ "title": title, "body": body, "labels": labels }).to_string();
     let (status, text) = post(format!("{base}/report"), vec![], payload).await.map_err(|e| {
         if e == "timeout" {
             format!("The report relay did not answer within {} s", TIMEOUT.as_secs())
@@ -304,13 +310,14 @@ pub async fn send_via_relay(post: &Post, relay_url: &str, title: &str, body: &st
 
 /// Whichever way is set up: a token on the tab goes straight to GitHub,
 /// else the relay. `support` is the settings' support section.
-pub async fn send(post: &Post, support: &Value, builtin_relay: &str, title: &str, body: &str) -> Result<Issue, String> {
+pub async fn send(post: &Post, support: &Value, builtin_relay: &str, report: &Report) -> Result<Issue, String> {
+    let (title, body, labels) = (report.title.as_str(), report.body.as_str(), report.labels.as_slice());
     let token = support["githubToken"].as_str().unwrap_or("");
     if !token.trim().is_empty() {
-        return file_issue(post, support["repo"].as_str().unwrap_or(""), token, title, body).await;
+        return file_issue(post, support["repo"].as_str().unwrap_or(""), token, title, body, labels).await;
     }
     let relay = support["relayUrl"].as_str().filter(|r| !r.trim().is_empty()).unwrap_or(builtin_relay);
-    send_via_relay(post, relay, title, body).await
+    send_via_relay(post, relay, title, body, labels).await
 }
 
 #[cfg(test)]
@@ -327,7 +334,7 @@ mod tests {
     }
 
     fn input<'a>(description: &'a str, info: &'a Value, settings: &'a Value, log: &'a str, history: &'a [Value], scale: Option<&'a Value>) -> Input<'a> {
-        Input { description, info, settings, log, history, scale, machine: "YARD-PC · windows · x86_64".into(), now: Utc::now() }
+        Input { description, info, settings, log, history, scale, machine: "YARD-PC · windows · x86_64".into(), idea: false, now: Utc::now() }
     }
 
     #[test]
@@ -395,54 +402,69 @@ mod tests {
     #[tokio::test]
     async fn files_the_issue_with_the_token_and_reads_back_its_link() {
         let (post, calls) = fake(vec![Ok((201, r#"{"number": 12, "html_url": "https://github.com/Joepowles/fgr-scale-station/issues/12"}"#))]);
-        let r = file_issue(&*post, "https://github.com/Joepowles/fgr-scale-station/", " tok ", "T", "B").await.unwrap();
+        let r = file_issue(&*post, "https://github.com/Joepowles/fgr-scale-station/", " tok ", "T", "B", &PROBLEM_LABELS).await.unwrap();
         assert_eq!(r, Issue { number: Some(12), url: Some("https://github.com/Joepowles/fgr-scale-station/issues/12".into()) });
         let calls = calls.lock().unwrap();
         assert_eq!(calls[0].0, "https://api.github.com/repos/Joepowles/fgr-scale-station/issues");
         assert!(calls[0].1.contains(&("Authorization", "Bearer tok".into())));
-        assert_eq!(calls[0].2, json!({ "title": "T", "body": "B", "labels": ["from-the-yard"] }));
+        assert_eq!(calls[0].2, json!({ "title": "T", "body": "B", "labels": ["from-the-yard", "bug"] }));
     }
 
     #[tokio::test]
     async fn explains_a_bad_token_a_missing_repo_and_no_token() {
         let answer = |status| fake(vec![Ok((status, r#"{"message":"Bad credentials"}"#))]).0;
-        assert!(file_issue(&*answer(401), "a/b", "t", "T", "B").await.unwrap_err().contains("rejected the token"));
-        assert!(file_issue(&*answer(404), "a/b", "t", "T", "B").await.unwrap_err().contains("could not find the repository"));
-        assert!(file_issue(&*answer(201), "a/b", "", "T", "B").await.unwrap_err().contains("No GitHub token"));
-        assert!(file_issue(&*answer(201), "nonsense", "t", "T", "B").await.unwrap_err().contains("owner/name"));
+        assert!(file_issue(&*answer(401), "a/b", "t", "T", "B", &PROBLEM_LABELS).await.unwrap_err().contains("rejected the token"));
+        assert!(file_issue(&*answer(404), "a/b", "t", "T", "B", &PROBLEM_LABELS).await.unwrap_err().contains("could not find the repository"));
+        assert!(file_issue(&*answer(201), "a/b", "", "T", "B", &PROBLEM_LABELS).await.unwrap_err().contains("No GitHub token"));
+        assert!(file_issue(&*answer(201), "nonsense", "t", "T", "B", &PROBLEM_LABELS).await.unwrap_err().contains("owner/name"));
         let offline = fake(vec![Err("dns error: api.github.com")]).0;
-        assert!(file_issue(&*offline, "a/b", "t", "T", "B").await.unwrap_err().contains("Could not reach GitHub"));
+        assert!(file_issue(&*offline, "a/b", "t", "T", "B", &PROBLEM_LABELS).await.unwrap_err().contains("Could not reach GitHub"));
     }
 
     #[tokio::test]
     async fn a_label_the_repository_refuses_is_dropped_and_the_report_still_goes() {
         let (post, calls) = fake(vec![Ok((422, "Validation Failed")), Ok((201, r#"{"number": 3, "html_url": "u"}"#))]);
-        assert_eq!(file_issue(&*post, "a/b", "t", "T", "B").await.unwrap().number, Some(3));
+        assert_eq!(file_issue(&*post, "a/b", "t", "T", "B", &PROBLEM_LABELS).await.unwrap().number, Some(3));
         let labels: Vec<Value> = calls.lock().unwrap().iter().map(|c| c.2["labels"].clone()).collect();
-        assert_eq!(labels, [json!(["from-the-yard"]), json!([])]);
+        assert_eq!(labels, [json!(["from-the-yard", "bug"]), json!([])]);
     }
 
     #[tokio::test]
     async fn sends_through_the_relay_and_reads_back_its_answer_or_its_error() {
         let (post, calls) = fake(vec![Ok((201, r#"{"number": 9, "url": "https://github.com/Joepowles/fgr-scale-station/issues/9"}"#))]);
-        let r = send_via_relay(&*post, "https://scale-station-reports.example.workers.dev/", "T", "B").await.unwrap();
+        let r = send_via_relay(&*post, "https://scale-station-reports.example.workers.dev/", "T", "B", &PROBLEM_LABELS).await.unwrap();
         assert_eq!(r, Issue { number: Some(9), url: Some("https://github.com/Joepowles/fgr-scale-station/issues/9".into()) });
         assert_eq!(calls.lock().unwrap()[0].0, "https://scale-station-reports.example.workers.dev/report");
-        assert_eq!(calls.lock().unwrap()[0].2, json!({ "title": "T", "body": "B", "labels": ["from-the-yard"] }));
+        assert_eq!(calls.lock().unwrap()[0].2, json!({ "title": "T", "body": "B", "labels": ["from-the-yard", "bug"] }));
         let limited = fake(vec![Ok((429, r#"{"error": "Too many reports from this address; try again in a minute."}"#))]).0;
-        assert!(send_via_relay(&*limited, "https://r.example", "T", "B").await.unwrap_err().contains("Too many reports"));
-        assert!(send_via_relay(&*fake(vec![]).0, "", "T", "B").await.unwrap_err().contains("no bug report relay or GitHub token"));
+        assert!(send_via_relay(&*limited, "https://r.example", "T", "B", &PROBLEM_LABELS).await.unwrap_err().contains("Too many reports"));
+        assert!(send_via_relay(&*fake(vec![]).0, "", "T", "B", &PROBLEM_LABELS).await.unwrap_err().contains("no bug report relay or GitHub token"));
         let offline = fake(vec![Err("dns error")]).0;
-        assert!(send_via_relay(&*offline, "https://r.example", "T", "B").await.unwrap_err().contains("Could not reach the report relay"));
+        assert!(send_via_relay(&*offline, "https://r.example", "T", "B", &PROBLEM_LABELS).await.unwrap_err().contains("Could not reach the report relay"));
+    }
+
+    fn report() -> Report {
+        Report { title: "T".into(), body: "B".into(), labels: PROBLEM_LABELS.to_vec() }
+    }
+
+    #[test]
+    fn an_idea_is_titled_and_labelled_as_one() {
+        let (info, s) = (json!({}), json!({}));
+        let idea = Input { idea: true, ..input("Open the history in its own window", &info, &s, "", &[], None) };
+        let r = build(&idea);
+        assert_eq!(r.title, "Idea: Open the history in its own window");
+        assert!(r.body.starts_with("## The idea\n\nOpen the history in its own window"));
+        assert_eq!(r.labels, ["from-the-yard", "enhancement"]);
+        assert_eq!(build(&input("Scale stuck", &info, &s, "", &[], None)).labels, ["from-the-yard", "bug"]);
     }
 
     #[tokio::test]
     async fn a_token_on_the_tab_goes_straight_to_github_otherwise_the_relay_built_in() {
         let ok = r#"{"number": 1, "url": "u", "html_url": "u"}"#;
         let (post, calls) = fake(vec![Ok((201, ok)), Ok((201, ok)), Ok((201, ok))]);
-        send(&*post, &json!({ "githubToken": "t", "repo": "a/b" }), "https://r.example", "T", "B").await.unwrap();
-        send(&*post, &json!({ "githubToken": "", "repo": "a/b" }), "https://r.example", "T", "B").await.unwrap();
-        send(&*post, &json!({ "relayUrl": "https://mine.example" }), "https://r.example", "T", "B").await.unwrap();
+        send(&*post, &json!({ "githubToken": "t", "repo": "a/b" }), "https://r.example", &report()).await.unwrap();
+        send(&*post, &json!({ "githubToken": "", "repo": "a/b" }), "https://r.example", &report()).await.unwrap();
+        send(&*post, &json!({ "relayUrl": "https://mine.example" }), "https://r.example", &report()).await.unwrap();
         let urls: Vec<String> = calls.lock().unwrap().iter().map(|c| c.0.clone()).collect();
         assert_eq!(urls, ["https://api.github.com/repos/a/b/issues", "https://r.example/report", "https://mine.example/report"]);
     }

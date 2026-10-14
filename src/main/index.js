@@ -208,24 +208,25 @@ const registerIpc = () => {
   // account of itself: version, settings without passwords, the last
   // weighings, the tail of the log. Filed on GitHub, or saved to a file to
   // send some other way when the PC has no internet.
-  const buildBugReport = (description) => {
+  const buildBugReport = (description, kind) => {
     let logText = '';
     try { logText = fs.readFileSync(logFile(), 'utf8'); } catch { logText = logLines.join('\n'); }
     return bugReport.buildReport({
       description,
+      kind,
       info: { version: app.getVersion(), electron: process.versions.electron, ffmpeg: ffmpegAvailable(), plateReader: plateReader.status(), vehicleModel: detector.modelIsPresent() },
       settings: settings(), log: logText, history: history ? history.list({ limit: 40 }) : [], scale: scale?.status || null
     });
   };
-  ipcMain.handle('support:send', async (_e, { description, repo, token } = {}) => {
-    const report = buildBugReport(description);
+  ipcMain.handle('support:send', async (_e, { description, kind, repo, token } = {}) => {
+    const report = buildBugReport(description, kind);
     const sup = { ...(settings().support || {}), ...(repo ? { repo } : {}), ...(token ? { githubToken: token } : {}) };
-    const issue = await bugReport.sendReport({ support: sup, builtinRelayUrl: settingsStore.DEFAULTS.support.relayUrl, title: report.title, body: report.body });
+    const issue = await bugReport.sendReport({ support: sup, builtinRelayUrl: settingsStore.DEFAULTS.support.relayUrl, title: report.title, body: report.body, labels: report.labels });
     log(`bug report filed: ${issue.url}`);
     return issue;
   });
-  ipcMain.handle('support:save', async (_e, { description } = {}) => {
-    const report = buildBugReport(description);
+  ipcMain.handle('support:save', async (_e, { description, kind } = {}) => {
+    const report = buildBugReport(description, kind);
     const stampText = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     const r = await dialog.showSaveDialog(win, { title: 'Save the bug report', defaultPath: path.join(app.getPath('desktop'), `scale-station-report-${stampText}.md`), filters: [{ name: 'Markdown', extensions: ['md'] }] });
     if (r.canceled || !r.filePath) return null;

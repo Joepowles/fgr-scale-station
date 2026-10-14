@@ -412,11 +412,13 @@ fn app_open_releases(app: AppHandle) -> Result<(), String> {
 #[serde(default)]
 struct ReportArgs {
     description: String,
+    /// "idea" for an idea; anything else is a problem.
+    kind: String,
     repo: String,
     token: String,
 }
 
-fn build_bug_report(app: &AppHandle, description: &str) -> bug_report::Report {
+fn build_bug_report(app: &AppHandle, description: &str, idea: bool) -> bug_report::Report {
     let state = app.state::<AppState>();
     let log = fs::read_to_string(state.log_file()).unwrap_or_else(|_| state.log.lock().unwrap().iter().cloned().collect::<Vec<_>>().join("\n"));
     let history: Vec<Value> =
@@ -431,6 +433,7 @@ fn build_bug_report(app: &AppHandle, description: &str) -> bug_report::Report {
         history: &history,
         scale: scale.as_ref(),
         machine: bug_report::machine(),
+        idea,
         now: chrono::Utc::now(),
     })
 }
@@ -438,7 +441,7 @@ fn build_bug_report(app: &AppHandle, description: &str) -> bug_report::Report {
 #[tauri::command]
 async fn support_send(app: AppHandle, args: Option<ReportArgs>) -> Result<bug_report::Issue, String> {
     let args = args.unwrap_or_default();
-    let report = build_bug_report(&app, &args.description);
+    let report = build_bug_report(&app, &args.description, args.kind == "idea");
     let mut support = app.state::<AppState>().settings.lock().unwrap().get()["support"].clone();
     if !args.repo.trim().is_empty() {
         support["repo"] = args.repo.into();
@@ -447,14 +450,15 @@ async fn support_send(app: AppHandle, args: Option<ReportArgs>) -> Result<bug_re
         support["githubToken"] = args.token.into();
     }
     let builtin_relay = settings::defaults()["support"]["relayUrl"].as_str().unwrap_or("").to_string();
-    let issue = bug_report::send(&*bug_report::http_post(), &support, &builtin_relay, &report.title, &report.body).await?;
+    let issue = bug_report::send(&*bug_report::http_post(), &support, &builtin_relay, &report).await?;
     log(&app, format!("bug report filed: {}", issue.url.as_deref().unwrap_or("?")));
     Ok(issue)
 }
 
 #[tauri::command]
 async fn support_save(app: AppHandle, args: Option<ReportArgs>) -> Result<Option<String>, String> {
-    let report = build_bug_report(&app, &args.unwrap_or_default().description);
+    let args = args.unwrap_or_default();
+    let report = build_bug_report(&app, &args.description, args.kind == "idea");
     let stamp = chrono::Local::now().format("%Y-%m-%d-%H-%M-%S");
     let (tx, rx) = tokio::sync::oneshot::channel();
     let mut dialog =

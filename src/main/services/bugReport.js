@@ -41,8 +41,13 @@ const titleFor = (description) => {
  * @param {object[]} args.history    recent history entries, newest first
  * @param {object|null} args.scale   the scale reader's status
  */
-const buildReport = ({ description, info = {}, settings = {}, log = '', history = [], scale = null, now = new Date() }) => {
-  const title = titleFor(description);
+// kind: 'idea' for something that would make the app better, labelled apart
+// on GitHub so requests do not bury faults; anything else is a problem.
+const labelsFor = (kind) => (kind === 'idea' ? ['from-the-yard', 'enhancement'] : ['from-the-yard', 'bug']);
+
+const buildReport = ({ description, kind = 'problem', info = {}, settings = {}, log = '', history = [], scale = null, now = new Date() }) => {
+  const idea = kind === 'idea';
+  const title = idea ? titleFor(`Idea: ${String(description || '').trim()}`) : titleFor(description);
   const details = [
     ['Reported', now.toISOString()],
     ['App version', info.version || '?'],
@@ -59,7 +64,7 @@ const buildReport = ({ description, info = {}, settings = {}, log = '', history 
   let logTail = logText.length > LOG_TAIL_CHARS ? logText.slice(logText.indexOf('\n', logText.length - LOG_TAIL_CHARS) + 1) : logText;
 
   const assemble = (tail) => [
-    `## What happened`, '', String(description || '').trim() || '_(nothing typed)_', '',
+    idea ? '## The idea' : '## What happened', '', String(description || '').trim() || '_(nothing typed)_', '',
     `## Station`, '', detailTable, '',
     `<details><summary>Settings (passwords removed)</summary>`, '', fence(JSON.stringify(redactSettings(settings), null, 2), 'json'), '', '</details>', '',
     `<details><summary>Last ${Math.min(history.length, HISTORY_ENTRIES)} weighings (newest first)</summary>`, '', fence(entries || '(none)'), '', '</details>', '',
@@ -72,7 +77,7 @@ const buildReport = ({ description, info = {}, settings = {}, log = '', history 
     body = assemble(logTail);
   }
   if (body.length > BODY_LIMIT) body = `${body.slice(0, BODY_LIMIT - 20)}\n…(cut)`;
-  return { title, body };
+  return { title, body, labels: labelsFor(kind) };
 };
 
 const explainStatus = (status, text) => {
@@ -147,9 +152,9 @@ const sendViaRelay = async ({ relayUrl, title, body, labels = ['from-the-yard'],
 };
 
 // Whichever way is set up: a token on the tab goes straight to GitHub, else the relay.
-const sendReport = async ({ support = {}, builtinRelayUrl = '', title, body, fetchFn }) => {
-  if (String(support.githubToken || '').trim()) return fileIssue({ repo: support.repo, token: support.githubToken, title, body, fetchFn });
-  return sendViaRelay({ relayUrl: support.relayUrl || builtinRelayUrl, title, body, fetchFn });
+const sendReport = async ({ support = {}, builtinRelayUrl = '', title, body, labels, fetchFn }) => {
+  if (String(support.githubToken || '').trim()) return fileIssue({ repo: support.repo, token: support.githubToken, title, body, labels, fetchFn });
+  return sendViaRelay({ relayUrl: support.relayUrl || builtinRelayUrl, title, body, labels, fetchFn });
 };
 
 module.exports = { buildReport, fileIssue, sendViaRelay, sendReport, redactSettings, titleFor };
