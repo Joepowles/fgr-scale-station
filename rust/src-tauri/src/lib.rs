@@ -149,7 +149,10 @@ fn start_scale(app: &AppHandle) {
             alerts_app::feed(&handle, alerts::Input::Arrived);
         }
         ScaleEvent::Weighed(w) => {
-            log(&handle, format!("weighed {} {}", w.weight, w.unit));
+            log(
+                &handle,
+                format!("weighed {} {}{}", w.weight, w.unit, if w.estimated { " (not settled: steady enough after the wait, so weighed anyway)" } else { "" }),
+            );
             let _ = handle.emit("scale:weighed", &w);
             alerts_app::feed(&handle, alerts::Input::Weighed { weight: w.weight, unit: w.unit.to_string() });
             let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Weighed(w));

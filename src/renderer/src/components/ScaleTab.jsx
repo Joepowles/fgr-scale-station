@@ -88,6 +88,13 @@ export default function ScaleTab({ draft, patch }) {
             {num('stableSeconds', 'Must hold still for', 'A truck rocks for a moment after it stops.', { min: 0.5, step: 0.5, suffix: 'seconds' })}
             {num('stableTolerance', 'Allowing a wobble of', 'How much the reading may move and still count as settled.')}
           </div>
+          {/* The Rust app's: a truck that never settles is weighed anyway. */}
+          {s.unsettledSeconds !== undefined && (
+            <div className="grid grid-cols-2 gap-3">
+              {num('unsettledSeconds', 'Not settled after', 'An idling truck can keep the scale moving. 0: wait for it to settle, however long.', { suffix: 'seconds' })}
+              {num('unsettledTolerance', 'weigh it anyway within', 'The reading must still hold this steady for the settle time. The entry says it was weighed while moving.')}
+            </div>
+          )}
         </div>
       </section>
       <section className="border-t border-gray-800 pt-4 grid grid-cols-1 md:grid-cols-3 gap-5">

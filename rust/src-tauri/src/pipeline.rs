@@ -45,6 +45,9 @@ const HD_TIMEOUT: Duration = Duration::from_secs(12);
 /// How often the full-resolution feed writes a frame; the newest is read.
 const FEED_FPS: f64 = 2.0;
 
+/// On an entry weighed without the scale settling, until it does.
+const ESTIMATED_NOTE: &str = "weighed while the scale was still moving";
+
 #[derive(Debug)]
 pub enum Event {
     Arrived,
@@ -333,6 +336,7 @@ impl Pipeline {
             if let Some(w) = s.weighing.as_mut() {
                 w.weight = weighing.weight;
                 w.unit = weighing.unit;
+                w.estimated = false; // a reweigh is always a real settle
             }
         }
         self.sync(&session, false).await;
@@ -347,7 +351,8 @@ impl Pipeline {
         let (weighing, plate, photo, entry_id, written, corrected, note) = {
             let s = session.lock().unwrap();
             let Some(weighing) = s.weighing.clone() else { return };
-            let note = s.camera_error.as_ref().map(|e| format!("photo failed: {e}")).unwrap_or_default();
+            let note =
+                if weighing.estimated { ESTIMATED_NOTE.to_string() } else { s.camera_error.as_ref().map(|e| format!("photo failed: {e}")).unwrap_or_default() };
             (weighing, s.truck.plate(), s.truck.photo().cloned(), s.entry_id.clone(), s.written.clone(), s.corrected.clone(), note)
         };
         if entry_id.is_none() && photo.is_none() && !without_photo {
@@ -378,7 +383,7 @@ impl Pipeline {
                     unit: Some(weighing.unit.to_string()),
                     at: Some(weighing.at),
                     plate: plate_json.clone(),
-                    note: if stamped.is_none() { note } else { String::new() },
+                    note: if stamped.is_none() || weighing.estimated { note } else { String::new() },
                     ..Default::default()
                 };
                 // A reweigh that came before the entry was written goes on it now.
@@ -397,7 +402,10 @@ impl Pipeline {
                 }
                 if stamped.is_some() {
                     patch["photoAt"] = now_iso().into();
-                    patch["note"] = "".into();
+                }
+                // The estimate's note goes once the scale has settled.
+                if stamped.is_some() || !weighing.estimated {
+                    patch["note"] = if weighing.estimated { ESTIMATED_NOTE.into() } else { "".into() };
                 }
                 history.update(id, &object(patch), stamped.as_deref())
             }
