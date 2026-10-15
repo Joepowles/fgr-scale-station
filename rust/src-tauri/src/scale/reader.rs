@@ -61,6 +61,9 @@ pub struct Weighing {
     /// On a reweigh, the weight it corrects.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous: Option<f64>,
+    /// Weighed without the scale settling (see WeighingTrigger).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub estimated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -228,9 +231,9 @@ impl ScaleCore {
                     self.arrived_at = Some(now);
                     (self.sink)(ScaleEvent::Arrived)
                 }
-                Some(TriggerEvent::Weighed { weight, unit, gross, .. }) => {
+                Some(TriggerEvent::Weighed { weight, unit, gross, estimated, .. }) => {
                     self.arrived_at = None;
-                    let weighing = Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate: None, previous: None };
+                    let weighing = Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate: None, previous: None, estimated };
                     self.set_status(now, true, |s| s.last_weighing = Some(weighing.clone()));
                     (self.sink)(ScaleEvent::Weighed(weighing));
                 }
@@ -238,7 +241,7 @@ impl ScaleCore {
                     // More of the same truck on the deck: the weighing is
                     // corrected, its plate kept.
                     let plate = self.status.last_weighing.as_ref().and_then(|w| w.plate.clone());
-                    let weighing = Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate, previous: Some(previous) };
+                    let weighing = Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate, previous: Some(previous), estimated: false };
                     self.set_status(now, true, |s| s.last_weighing = Some(weighing.clone()));
                     (self.sink)(ScaleEvent::Reweighed(weighing));
                 }
@@ -535,9 +538,10 @@ mod tests {
             core.on_data(frame(0).as_bytes(), now);
             now += 250;
         }
-        // On, wandering 60 lb either way: never within the 40 lb it settles to.
+        // On, wandering 250 lb either way: never within the 40 lb it settles
+        // to, nor the 200 lb it is weighed anyway within after 20 s.
         for i in 0..200 {
-            core.on_data(frame(35_560 + if i % 2 == 0 { 60 } else { -60 }).as_bytes(), now);
+            core.on_data(frame(35_560 + if i % 2 == 0 { 250 } else { -250 }).as_bytes(), now);
             now += 250;
         }
         let said: Vec<_> = events
@@ -548,7 +552,7 @@ mod tests {
             .collect();
         assert_eq!(said.len(), 2, "once at 15 s and again 30 s later: {said:?}");
         assert!(events.lock().unwrap().iter().any(|e| matches!(e, ScaleEvent::Unsettled { unit: Unit::Lb, .. })));
-        assert_eq!((said[0].1, said[0].2, said[0].3), (35_500.0, 35_620.0, false));
+        assert_eq!((said[0].1, said[0].2, said[0].3), (35_310.0, 35_810.0, false));
         assert!(said[0].0 >= 15 && said[1].0 >= 45);
     }
 

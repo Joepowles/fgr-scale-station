@@ -169,6 +169,13 @@ pub struct TriggerSettings {
     pub stable_seconds: f64,
     #[serde(deserialize_with = "lenient_number")]
     pub stable_tolerance: f64,
+    /// A truck still not settled this long after arriving is weighed anyway
+    /// (0: never), once its reading holds within `unsettled_tolerance`, the
+    /// motion flag aside. See WeighingTrigger.
+    #[serde(deserialize_with = "lenient_number")]
+    pub unsettled_seconds: f64,
+    #[serde(deserialize_with = "lenient_number")]
+    pub unsettled_tolerance: f64,
 }
 
 /// A settings number the way the Electron side read it, `Number(x) || 0`:
@@ -186,7 +193,7 @@ pub fn lenient_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::
 
 impl Default for TriggerSettings {
     fn default() -> Self {
-        Self { min_weight: 5000.0, clear_weight: 1000.0, stable_seconds: 2.0, stable_tolerance: 40.0 }
+        Self { min_weight: 5000.0, clear_weight: 1000.0, stable_seconds: 2.0, stable_tolerance: 40.0, unsettled_seconds: 20.0, unsettled_tolerance: 200.0 }
     }
 }
 
@@ -204,6 +211,8 @@ pub enum TriggerEvent {
         unit: Option<Unit>,
         gross: bool,
         at: i64,
+        /// Weighed without settling (see WeighingTrigger).
+        estimated: bool,
     },
     Reweighed {
         weight: f64,
@@ -223,6 +232,9 @@ pub struct LastWeighing {
     pub weight: f64,
     pub unit: Option<Unit>,
     pub at: i64,
+    /// Taken without settling: the first real settle corrects it either way.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub estimated: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -248,6 +260,16 @@ struct Sample {
 /// two seconds missed the next truck (WC-Office, 2026-10-14, 35,580 lb) -
 /// or took it for more of the one before.
 ///
+/// A truck that never settles - an idling engine shaking the deck, an
+/// indicator that keeps its motion flag up - was never weighed at all, and
+/// trucks just checking their weight left the history with no trace
+/// (WC-Office, 2026-10-15: 44 s on the deck, 120 lb apart, motion flag on).
+/// So once a truck has been on the deck `unsettled_seconds` without settling,
+/// it is weighed anyway when its reading holds within the looser
+/// `unsettled_tolerance` over the window, motion flag or not: the weight is
+/// the window's middle reading, and the weighing is marked as estimated. If
+/// it settles properly later, that weight replaces it, up or down.
+///
 /// But a truck creeping on slowly can settle with only its front axle on the
 /// deck, and a tractor can settle before its trailer is on. So while the deck
 /// is loaded, a weight that settles again more than the tolerance above the
@@ -263,6 +285,9 @@ pub struct WeighingTrigger {
     pub armed: bool,
     /// Arrived has been raised for what is on the deck now.
     pub arrived: bool,
+    arrived_at: Option<i64>,
+    unsettled_ms: i64,
+    unsettled_tolerance: f64,
     /// The readings in a row at or under the clear weight, and when they began.
     clear_run: Option<(u32, i64)>,
     pub settled: bool,
@@ -280,6 +305,9 @@ impl WeighingTrigger {
             window: VecDeque::new(),
             armed: true,
             arrived: false,
+            arrived_at: None,
+            unsettled_ms: (s.unsettled_seconds.max(0.0) * 1000.0) as i64,
+            unsettled_tolerance: s.unsettled_tolerance.max(s.stable_tolerance.max(0.0)),
             clear_run: None,
             settled: false,
             last_weighing: None,
@@ -319,11 +347,14 @@ impl WeighingTrigger {
             if deck_clear {
                 self.armed = true;
                 self.arrived = false;
+                self.arrived_at = None;
                 return Some(TriggerEvent::Cleared { weight, at });
             }
             if let Some(last) = self.last_weighing {
-                if settled && weight > last.weight + self.tolerance {
-                    self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at });
+                // Heavier: more of the truck. Any settle at all after an
+                // estimate: the real weight.
+                if settled && (weight > last.weight + self.tolerance || last.estimated) {
+                    self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at, estimated: false });
                     return Some(TriggerEvent::Reweighed { weight, previous: last.weight, unit: reading.unit, gross: reading.gross, at });
                 }
             }
@@ -332,16 +363,28 @@ impl WeighingTrigger {
         if settled && weight >= self.min_weight {
             self.armed = false;
             self.arrived = true;
-            self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at });
-            return Some(TriggerEvent::Weighed { weight, unit: reading.unit, gross: reading.gross, at });
+            self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at, estimated: false });
+            return Some(TriggerEvent::Weighed { weight, unit: reading.unit, gross: reading.gross, at, estimated: false });
         }
         if !self.arrived && weight >= self.min_weight {
             self.arrived = true;
+            self.arrived_at = Some(at);
             return Some(TriggerEvent::Arrived { weight, at });
+        }
+        // On the deck long enough without settling: weighed anyway if steady enough.
+        let waited = self.arrived_at.is_some_and(|since| self.unsettled_ms > 0 && at - since >= self.unsettled_ms);
+        if waited && spans_window && weight >= self.min_weight && (max - min) <= self.unsettled_tolerance {
+            let mut weights: Vec<f64> = self.window.iter().map(|s| s.weight).collect();
+            weights.sort_by(f64::total_cmp);
+            let middle = weights[weights.len() / 2];
+            self.armed = false;
+            self.last_weighing = Some(LastWeighing { weight: middle, unit: reading.unit, at, estimated: true });
+            return Some(TriggerEvent::Weighed { weight: middle, unit: reading.unit, gross: reading.gross, at, estimated: true });
         }
         // A truck that came on and backed off again without settling.
         if self.arrived && deck_clear {
             self.arrived = false;
+            self.arrived_at = None;
             return Some(TriggerEvent::Cleared { weight, at });
         }
         None
@@ -452,7 +495,7 @@ mod tests {
 
     impl Rig {
         fn new(min_weight: f64, stable_seconds: f64, start: i64) -> Self {
-            let settings = TriggerSettings { min_weight, clear_weight: 1000.0, stable_seconds, stable_tolerance: 40.0 };
+            let settings = TriggerSettings { min_weight, clear_weight: 1000.0, stable_seconds, stable_tolerance: 40.0, unsettled_seconds: 0.0, unsettled_tolerance: 200.0 };
             Self { trigger: WeighingTrigger::new(&settings), now: start, events: Vec::new() }
         }
         fn feed(&mut self, weight: f64, motion: bool) {
@@ -586,6 +629,50 @@ mod tests {
         t.feed_n(3, |_| 0.0, false); // three readings, 0.1 s: still a glitch
         t.feed_n(50, |_| 41980.0, false);
         assert_eq!(t.kinds(), ["weighed"]);
+    }
+
+    #[test]
+    fn a_truck_that_never_settles_is_weighed_anyway_after_its_seconds() {
+        // WC-Office, 2026-10-15: 28,400 to 28,520 lb with the motion flag on, 44 s.
+        let mut t = Rig::new(4000.0, 2.0, 1000);
+        t.trigger.unsettled_ms = 20_000;
+        t.feed_n(40, |_| 140.0, false);
+        t.feed_n(10, |i| 10_000.0 + i as f64 * 1800.0, true);
+        t.feed_n(300, |i| 28_400.0 + (i % 7) as f64 * 20.0, true); // 15 s: not yet
+        assert_eq!(t.kinds(), Vec::<&str>::new());
+        t.feed_n(200, |i| 28_400.0 + (i % 7) as f64 * 20.0, true); // past 20 s
+        assert_eq!(t.kinds(), ["weighed"]);
+        assert!(matches!(t.events.iter().find(|e| matches!(e, TriggerEvent::Weighed { .. })), Some(TriggerEvent::Weighed { estimated: true, .. })));
+        assert!((28_400.0..=28_520.0).contains(&t.weight_of(0)));
+        // It drives off: the next truck is weighed as usual.
+        t.feed_n(50, |_| 140.0, false);
+        t.feed_n(60, |_| 31_000.0, false);
+        assert_eq!(t.kinds(), ["weighed", "cleared", "weighed"]);
+    }
+
+    #[test]
+    fn an_estimate_is_corrected_by_a_real_settle_up_or_down() {
+        let mut t = Rig::new(4000.0, 2.0, 1000);
+        t.trigger.unsettled_ms = 20_000;
+        t.feed_n(40, |_| 140.0, false);
+        t.feed_n(450, |i| 30_000.0 + (i % 5) as f64 * 30.0, true);
+        assert_eq!(t.kinds(), ["weighed"]);
+        let estimate = t.weight_of(0);
+        t.feed_n(60, |_| 29_980.0, false); // the engine off: it settles, lighter
+        assert_eq!(t.kinds(), ["weighed", "reweighed"]);
+        assert_eq!(t.weight_of(1), 29_980.0);
+        assert_eq!(t.previous_of(1), estimate);
+        t.feed_n(60, |_| 29_980.0, false); // and stays: nothing more
+        assert_eq!(t.kinds(), ["weighed", "reweighed"]);
+    }
+
+    #[test]
+    fn a_truck_wandering_too_far_is_not_estimated() {
+        let mut t = Rig::new(4000.0, 2.0, 1000);
+        t.trigger.unsettled_ms = 20_000;
+        t.feed_n(40, |_| 140.0, false);
+        t.feed_n(600, |i| 30_000.0 + (i % 2) as f64 * 400.0, true); // 400 lb apart, 30 s
+        assert!(t.kinds().is_empty());
     }
 
     #[test]
