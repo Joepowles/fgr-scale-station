@@ -114,6 +114,24 @@ pub enum ScaleEvent {
 /// back into the reader.
 pub type Sink = Arc<dyn Fn(ScaleEvent) + Send + Sync>;
 
+/// A reading is taken to stand for at most this long when a clump of them is
+/// spread back (an indicator sends a few a second; longer is a gap, not a
+/// clump).
+const MAX_READING_MS: i64 = 1_000;
+
+/// When each of `n` readings arriving together at `now` was really sent. On
+/// weak Wi-Fi they come a few at a time, seconds apart, and stamping them all
+/// with the moment they arrived made two seconds of steady readings look like
+/// an instant: a truck at a steady 31,300 lb never settled (WC-Office,
+/// 2026-10-15). So a clump is spread evenly back over the time since the last
+/// one, the newest at `now`. One reading at a time, as on a good link, keeps
+/// its own arrival time.
+pub fn spread(last: Option<i64>, now: i64, n: usize) -> Vec<i64> {
+    let Some(last) = last.filter(|&l| l < now && n > 1) else { return vec![now; n] };
+    let span = (now - last).min(MAX_READING_MS * n as i64);
+    (1..=n as i64).map(|i| now - span + span * i / n as i64).collect()
+}
+
 const UNSETTLED_AFTER_MS: i64 = 15_000;
 const UNSETTLED_EVERY_MS: i64 = 30_000;
 
@@ -123,6 +141,9 @@ pub struct ScaleCore {
     trigger: WeighingTrigger,
     status: ScaleStatus,
     last_emit_at: i64,
+    /// When the last readings came in, to spread a clump of them back over
+    /// the time they were really sent in (see `spread`).
+    last_chunk_at: Option<i64>,
     /// When the truck on the deck arrived, and when its not settling was last said.
     arrived_at: Option<i64>,
     unsettled_said_at: Option<i64>,
@@ -150,6 +171,7 @@ impl ScaleCore {
                 updated_at: now,
             },
             last_emit_at: 0,
+            last_chunk_at: None,
             arrived_at: None,
             unsettled_said_at: None,
             sink,
@@ -213,8 +235,13 @@ impl ScaleCore {
     }
 
     pub fn on_data(&mut self, chunk: &[u8], now: i64) {
-        for reading in self.splitter.feed(chunk) {
-            let event = self.trigger.push(&reading, now);
+        let readings = self.splitter.feed(chunk);
+        let times = spread(self.last_chunk_at, now, readings.len());
+        if !readings.is_empty() {
+            self.last_chunk_at = Some(now);
+        }
+        for (reading, at) in readings.into_iter().zip(times) {
+            let event = self.trigger.push(&reading, at);
             let (settled, loaded, unit) = (self.trigger.settled, !self.trigger.armed, reading.unit.unwrap_or(self.unit));
             self.set_status(now, false, |s| {
                 s.weight = Some(reading.weight);
@@ -526,6 +553,37 @@ mod tests {
     }
 
     // Ported from tests/scaleReader.test.js.
+    #[test]
+    fn a_clump_is_spread_back_over_the_time_since_the_last() {
+        assert_eq!(spread(Some(1000), 3400, 6), [1400, 1800, 2200, 2600, 3000, 3400]);
+        assert_eq!(spread(Some(1000), 1400, 1), [1400]); // one at a time: as it came
+        assert_eq!(spread(None, 5000, 3), [5000, 5000, 5000]); // the first clump: nothing to go by
+        assert_eq!(spread(Some(0), 60_000, 2), [59_000, 60_000]); // a long gap is a gap, not a clump
+    }
+
+    #[test]
+    fn readings_that_arrive_in_clumps_still_settle() {
+        // WC-Office, 2026-10-15: the readings reached it a few at a time,
+        // seconds apart, and a truck reading 31,300 lb with no motion flag
+        // was still "not settled" after 21 s. Here: 2.5 readings a second,
+        // delivered in clumps of six every 2.4 s.
+        let (sink, weighed) = recording();
+        let mut core = ScaleCore::new(&settings(), sink, 0);
+        let mut now = 0;
+        let mut clump = |core: &mut ScaleCore, weight: u32, now: &mut i64| {
+            let bytes: Vec<u8> = (0..6).flat_map(|_| frame(weight)).collect();
+            *now += 2400;
+            core.on_data(&bytes, *now);
+        };
+        for _ in 0..3 {
+            clump(&mut core, 0, &mut now);
+        }
+        for _ in 0..4 {
+            clump(&mut core, 31_300, &mut now);
+        }
+        assert_eq!(*weighed.lock().unwrap(), [31_300.0], "settled on clumped readings");
+    }
+
     #[test]
     fn says_why_a_truck_on_the_deck_has_not_settled() {
         let events = Arc::new(Mutex::new(Vec::new()));

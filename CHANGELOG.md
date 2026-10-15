@@ -2,6 +2,11 @@
 
 Newest first. The app shows this file on the Updates tab of its settings.
 
+## 0.2.6
+
+- Trucks are weighed on a PC that reads the scale over weak Wi-Fi. The readings reach such a PC a few at a time, seconds apart, and the app took each clump for a single instant: a truck sitting at a steady weight never counted as settled, and could leave unweighed. A clump is now spread back over the time it was sent in.
+- A truck that never settles is still weighed. If it has been on the scale 20 seconds without settling, and its reading holds within 200 lb, it is weighed anyway, its entry marked "weighed while the scale was still moving"; if it settles after all, the entry takes that weight. Both numbers are on the Scale tab ("Not settled after", "weigh it anyway within"); 0 seconds turns it off.
+
 ## 0.2.5
 
 - Alerts, on a new Alerts tab in Settings. Add as many as you like, each a "when" and a "then". When: something comes onto the scale (over a weight you pick, 500 lb say, well under the history's), a truck is weighed (any, or only over or under weights you set, for overweight or light loads), the scale is clear again, a plate is read (any, only plates on a list, or only plates not on it), no plate could be read, a truck sits on the scale without settling, something moves in the camera picture, or the scale or the camera stops sending. Then: a sound (chime, bell, beep, double beep, alarm, or a sound file of your own) at its own volume, once, for some seconds or until dismissed; a banner over the picture; a Windows notification. Each has a Test button and a gap before it can go off again.
