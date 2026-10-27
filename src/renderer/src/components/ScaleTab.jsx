@@ -51,6 +51,7 @@ export default function ScaleTab({ draft, patch }) {
             <label className="block text-xs text-gray-400 col-span-2">Device server address<input className={`${inputClass} mono`} value={s.host} placeholder="192.168.1.9" onChange={(e) => patch('scale', { host: e.target.value })} /></label>
             <label className="block text-xs text-gray-400">TCP port<input type="number" className={inputClass} value={s.port} onChange={(e) => patch('scale', { port: Number(e.target.value) })} /></label>
           </div>
+          <label className="flex items-start gap-2 text-xs text-gray-300"><input type="checkbox" className="mt-0.5" checked={s.share !== false} onChange={(e) => patch('scale', { share: e.target.checked })} /> <span>Share one connection with the other PCs<span className="block text-[11px] text-gray-500">The device server takes only a few connections. With this on, one PC with the app open reads the scale and passes it on to the rest; if that PC closes the app, another takes over. Every PC must have the same address and port above.</span></span></label>
           <div className="flex gap-2 flex-wrap">
             <button type="button" onClick={discover} disabled={finding} className={btn}>{finding ? (progress ? `Scanning… ${Math.round((progress.done / progress.total) * 100)}%` : 'Searching…') : 'Find the device server'}</button>
             <button type="button" onClick={runTest} disabled={testing || !s.host} className={btn}>{testing ? 'Listening for 3 s…' : '🔌 Test connection'}</button>
@@ -125,6 +126,7 @@ export default function ScaleTab({ draft, patch }) {
         {live && (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-xs text-gray-300">
             <div><span className="text-gray-500">Connection</span> {live.connected ? <span className="text-emerald-300">connected</span> : <span className="text-amber-300">not connected</span>}</div>
+            <div className="col-span-2 md:col-span-3"><span className="text-gray-500">Reading</span> {live.via ? <>through {live.via}</> : 'the device server directly'}</div>
             <div><span className="text-gray-500">Weight now</span> <b>{fmtWeight(live.weight, live.unit)}</b>{live.weight !== null && (live.motion ? ' · moving' : live.settled ? ' · settled' : ' · settling')}</div>
             <div><span className="text-gray-500">Readings</span> {live.frames}</div>
             <div><span className="text-gray-500">Last reading</span> {timeAgo(live.lastFrameAt)}</div>

@@ -49,6 +49,7 @@ fn base_defaults() -> Value {
             "host": "",
             "port": 950,
             "unit": "lb",
+            "share": true,
             "minWeight": 4000,
             "clearWeight": 1000,
             "stableSeconds": 2,

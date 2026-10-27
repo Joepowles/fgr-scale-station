@@ -6,7 +6,8 @@
 //! Split in two. `ScaleCore` is everything that decides anything - frames in,
 //! status and events out - with the clock passed in, so tests drive it with
 //! made-up bytes and times. `ScaleReader` owns a background task that keeps a
-//! socket open and feeds the core whatever arrives.
+//! socket open and feeds the core whatever arrives: from the device server,
+//! or from another copy of the app that reads it and passes it on (share.rs).
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -18,12 +19,15 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout, Instant};
 
 use super::frames::{latin1, lenient_number, FrameSplitter, Reading, TriggerEvent, TriggerSettings, Unit, WeighingTrigger};
+use super::share::{self, Decision, Share};
 
 const RECONNECT_MIN: Duration = Duration::from_secs(2);
 const RECONNECT_MAX: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const SILENCE_TIMEOUT: Duration = Duration::from_secs(15);
 const STATUS_MIN_INTERVAL_MS: i64 = 250;
+/// A relay that dropped is tried again, or another, sooner than the scale.
+const RELAY_RETRY: Duration = Duration::from_millis(500);
 
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -38,13 +42,16 @@ pub struct ScaleSettings {
     #[serde(deserialize_with = "lenient_number")]
     pub port: f64,
     pub unit: Unit,
+    /// Read the scale through another copy of the app on the LAN that reads
+    /// it already, or be that copy for the others (share.rs).
+    pub share: bool,
     #[serde(flatten)]
     pub trigger: TriggerSettings,
 }
 
 impl Default for ScaleSettings {
     fn default() -> Self {
-        Self { enabled: false, host: String::new(), port: 950.0, unit: Unit::Lb, trigger: TriggerSettings::default() }
+        Self { enabled: false, host: String::new(), port: 950.0, unit: Unit::Lb, share: true, trigger: TriggerSettings::default() }
     }
 }
 
@@ -70,6 +77,9 @@ pub struct Weighing {
 #[serde(rename_all = "camelCase")]
 pub struct ScaleStatus {
     pub connected: bool,
+    /// The PC whose connection to the scale this one reads through; none
+    /// when it reads the scale itself.
+    pub via: Option<String>,
     pub weight: Option<f64>,
     pub unit: Unit,
     pub settled: bool,
@@ -108,6 +118,8 @@ pub enum ScaleEvent {
         weight: f64,
         at: i64,
     },
+    /// For the log: who reads the scale through whom.
+    Note(String),
 }
 
 /// Where events go. Called with the reader's lock held, so it must not call
@@ -158,6 +170,7 @@ impl ScaleCore {
             trigger: WeighingTrigger::new(&settings.trigger),
             status: ScaleStatus {
                 connected: false,
+                via: None,
                 weight: None,
                 unit: settings.unit,
                 settled: false,
@@ -208,8 +221,9 @@ impl ScaleCore {
         (self.sink)(ScaleEvent::Status(self.status.clone()));
     }
 
-    pub fn connecting(&mut self) {
+    pub fn connecting(&mut self, via: Option<String>) {
         self.splitter = FrameSplitter::new(true);
+        self.status.via = via;
     }
 
     pub fn connected(&mut self, now: i64) {
@@ -323,18 +337,24 @@ impl ScaleCore {
 pub struct ScaleReader {
     core: Arc<Mutex<ScaleCore>>,
     task: JoinHandle<()>,
+    share: Option<Arc<Share>>,
 }
 
 impl ScaleReader {
     /// Starts reading, carrying over the truck on the deck from `previous`.
     pub fn start(settings: &ScaleSettings, previous: Option<&ScaleReader>, sink: Sink) -> Self {
+        let share = settings.share.then(|| Share::new(share::scale_key(&settings.host, port_of(settings.port)), share::Net::default(), sink.clone()));
+        Self::start_shared(settings, previous, sink, share)
+    }
+
+    pub fn start_shared(settings: &ScaleSettings, previous: Option<&ScaleReader>, sink: Sink, share: Option<Arc<Share>>) -> Self {
         let mut core = ScaleCore::new(settings, sink, now_ms());
         if let Some(previous) = previous {
             core.adopt(&previous.lock());
         }
         let core = Arc::new(Mutex::new(core));
-        let task = tauri::async_runtime::spawn(run(core.clone(), settings.host.trim().to_string(), port_of(settings.port)));
-        Self { core, task }
+        let task = tauri::async_runtime::spawn(run(core.clone(), settings.host.trim().to_string(), port_of(settings.port), share.clone()));
+        Self { core, task, share }
     }
 
     fn lock(&self) -> MutexGuard<'_, ScaleCore> {
@@ -370,6 +390,9 @@ impl ScaleReader {
 
     pub fn stop(&self) {
         self.task.abort();
+        if let Some(share) = &self.share {
+            share.bye();
+        }
         self.lock().disconnected(now_ms());
     }
 }
@@ -401,24 +424,73 @@ async fn connect(host: &str, port: u16) -> std::io::Result<TcpStream> {
 /// Connect, read until the line drops or goes quiet, wait, and again, for as
 /// long as the reader runs. The wait doubles each time, up to a minute, and
 /// starts over once a connection is made.
-async fn run(core: Arc<Mutex<ScaleCore>>, host: String, port: u16) {
+///
+/// When sharing, where it connects is the election's to say: the scale, with
+/// what it reads passed on to the copies that follow, or the leader's relay.
+/// It moves the moment that changes.
+async fn run(core: Arc<Mutex<ScaleCore>>, host: String, port: u16, share: Option<Arc<Share>>) {
     let lock = || core.lock().unwrap_or_else(|e| e.into_inner());
+    let sink = lock().sink.clone();
+    let note = |message: &str| sink(ScaleEvent::Note(message.to_string()));
+    let _sharing = match &share {
+        Some(share) => Some(share.start().await),
+        None => None,
+    };
+    let mut decisions = share.as_ref().map(|s| s.decisions());
+    let mut relaying = None;
     let mut backoff = RECONNECT_MIN;
     loop {
-        lock().connecting();
-        match connect(&host, port).await {
+        let source = match decisions.as_mut() {
+            Some(decisions) => share::next(decisions).await,
+            None => Decision::Lead,
+        };
+        let (target, via, leader) = match &source {
+            Decision::Follow { id, addr, name } => ((addr.ip().to_string(), addr.port()), Some(name.clone()), Some(*id)),
+            _ => ((host.clone(), port), None, None),
+        };
+        match (&source, &share) {
+            (Decision::Lead, Some(share)) if relaying.is_none() => {
+                relaying = Some(share.lead());
+                note("reading the scale directly, and passing it on to any other PC on the network with this app open");
+            }
+            (Decision::Follow { name, .. }, _) => {
+                if relaying.take().is_some() {
+                    note("an older copy of the app on another PC reads the scale too: handing over to it");
+                }
+                if lock().status().via.as_ref() != Some(name) {
+                    note(&format!("reading the scale through {name}, which passes it on"));
+                }
+            }
+            _ => {}
+        }
+        lock().connecting(via);
+        let mut connected = false;
+        match connect(&target.0, target.1).await {
             Ok(mut stream) => {
+                connected = true;
+                if let (Some(share), Some(id)) = (&share, leader) {
+                    share.reached(id);
+                }
                 backoff = RECONNECT_MIN;
                 lock().connected(now_ms());
                 let mut buf = [0u8; 4096];
                 loop {
-                    match timeout(SILENCE_TIMEOUT, stream.read(&mut buf)).await {
+                    let read = tokio::select! {
+                        read = timeout(SILENCE_TIMEOUT, stream.read(&mut buf)) => read,
+                        _ = share::moved(&mut decisions, &source) => break,
+                    };
+                    match read {
                         Err(_) => {
                             lock().error("No data from the scale", now_ms());
                             break;
                         }
                         Ok(Ok(0)) => break,
-                        Ok(Ok(n)) => lock().on_data(&buf[..n], now_ms()),
+                        Ok(Ok(n)) => {
+                            lock().on_data(&buf[..n], now_ms());
+                            if let Some(relaying) = &relaying {
+                                relaying.pass_on(&buf[..n]);
+                            }
+                        }
                         Ok(Err(err)) => {
                             lock().error(err.to_string(), now_ms());
                             break;
@@ -429,8 +501,21 @@ async fn run(core: Arc<Mutex<ScaleCore>>, host: String, port: u16) {
             Err(err) => lock().error(err.to_string(), now_ms()),
         }
         lock().disconnected(now_ms());
-        sleep(backoff).await;
-        backoff = (backoff * 2).min(RECONNECT_MAX);
+        let wait = match (&share, leader) {
+            (Some(share), Some(id)) => {
+                share.lost(id, connected);
+                RELAY_RETRY
+            }
+            _ => {
+                let wait = backoff;
+                backoff = (backoff * 2).min(RECONNECT_MAX);
+                wait
+            }
+        };
+        tokio::select! {
+            _ = sleep(wait) => {}
+            _ = share::moved(&mut decisions, &source) => {}
+        }
     }
 }
 

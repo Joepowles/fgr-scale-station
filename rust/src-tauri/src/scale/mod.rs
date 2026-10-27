@@ -3,3 +3,4 @@
 pub mod discovery;
 pub mod frames;
 pub mod reader;
+pub mod share;

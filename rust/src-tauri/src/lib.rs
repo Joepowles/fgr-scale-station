@@ -162,6 +162,7 @@ fn start_scale(app: &AppHandle) {
             let _ = handle.emit("scale:weighed", &w);
             let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Reweighed(w));
         }
+        ScaleEvent::Note(message) => log(&handle, message),
         ScaleEvent::Cleared { .. } => {
             log(&handle, "deck clear");
             let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Cleared);
