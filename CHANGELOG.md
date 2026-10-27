@@ -2,6 +2,13 @@
 
 Newest first. The app shows this file on the Updates tab of its settings.
 
+## 0.2.7
+
+- The app can be open on as many PCs as you like. The scale's device server takes only a few connections, and the ticketing software and the website hold two of them, so the app could run on two PCs at most. Now one PC with the app open reads the scale and passes it on to the others on the network, so the app takes one connection however many PCs have it open. Every PC still weighs, photographs and keeps the history as before.
+- If the PC reading the scale closes the app, another takes over within a second or two; if it crashes or loses power, within a few seconds. A PC that cannot reach the one passing the scale on reads the scale itself instead.
+- "Share one connection with the other PCs" on the Scale tab turns it on or off (on to start with). PCs share only when they have the same device server address and port. The Scale tab's status says whether the PC reads the scale directly or through another PC, and which.
+- The first time it opens, Windows may ask whether to let the app use the network: allow it on private networks, or the PCs cannot find each other and each reads the scale itself, as before.
+
 ## 0.2.6
 
 - Trucks are weighed on a PC that reads the scale over weak Wi-Fi. The readings reach such a PC a few at a time, seconds apart, and the app took each clump for a single instant: a truck sitting at a steady weight never counted as settled, and could leave unweighed. A clump is now spread back over the time it was sent in.
