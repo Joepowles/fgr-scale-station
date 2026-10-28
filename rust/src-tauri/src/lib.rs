@@ -166,6 +166,8 @@ fn start_scale(app: &AppHandle) {
             );
             let _ = handle.emit("scale:weighed", &w);
             alerts_app::feed(&handle, alerts::Input::Weighed { weight: w.weight, unit: w.unit.to_string() });
+            // A truck can settle without an arrival seen first.
+            samples::on_arrived(&handle);
             let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Weighed(w));
         }
         ScaleEvent::Reweighed(w) => {

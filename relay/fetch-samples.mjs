@@ -10,7 +10,7 @@
 // log over the visit, with the scale readings) and visit.json. --keep leaves
 // them on the relay too. RELAY_URL overrides the relay's address.
 
-import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, rmSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -42,15 +42,27 @@ for (const { name, size } of samples) {
       console.error(`${name}: the relay answered ${one.status}; left there`);
       continue;
     }
-    mkdirSync(target, { recursive: true });
-    const tarFile = `${target}.tar`;
-    writeFileSync(tarFile, Buffer.from(await one.arrayBuffer()));
-    const untar = spawnSync('tar', ['-xf', tarFile, '-C', target], { stdio: 'inherit' });
-    if (untar.status !== 0) {
-      console.error(`${name}: could not unpack ${tarFile}; left on the relay`);
+    const bytes = Buffer.from(await one.arrayBuffer());
+    // Only a plain tar, which cannot unpack to more than its own size.
+    if (bytes.length < 512 || bytes.subarray(257, 262).toString('latin1') !== 'ustar') {
+      console.error(`${name}: not a plain tar; left on the relay`);
       continue;
     }
-    rmSync(tarFile);
+    // Unpacked beside the target and renamed into place, so a run cut short
+    // leaves no folder that would make the next run skip it.
+    const partial = `${target}.partial`;
+    rmSync(partial, { recursive: true, force: true });
+    mkdirSync(partial, { recursive: true });
+    const tarFile = `${partial}.tar`;
+    writeFileSync(tarFile, bytes);
+    const untar = spawnSync('tar', ['-xf', tarFile, '-C', partial], { stdio: 'inherit' });
+    rmSync(tarFile, { force: true });
+    if (untar.status !== 0) {
+      rmSync(partial, { recursive: true, force: true });
+      console.error(`${name}: could not unpack it; left on the relay`);
+      continue;
+    }
+    renameSync(partial, target);
     console.log(`${name} (${Math.round((size || 0) / 1024)} KB) -> ${target}`);
     fetched += 1;
   }
