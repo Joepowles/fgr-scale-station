@@ -18,7 +18,7 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout, Instant};
 
-use super::frames::{latin1, lenient_number, FrameSplitter, Reading, TriggerEvent, TriggerSettings, Unit, WeighingTrigger};
+use super::frames::{latin1, lenient_number, FrameSplitter, Phase, Reading, TriggerEvent, TriggerSettings, Unit, WeighingTrigger};
 use super::share::{self, Decision, Share};
 
 const RECONNECT_MIN: Duration = Duration::from_secs(2);
@@ -71,6 +71,10 @@ pub struct Weighing {
     /// Weighed without the scale settling (see WeighingTrigger).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub estimated: bool,
+    /// Pulled on before the truck ahead, weighed at this, had left: the deck
+    /// never read clear between them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follows: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -84,6 +88,8 @@ pub struct ScaleStatus {
     pub unit: Unit,
     pub settled: bool,
     pub loaded: bool,
+    /// empty, arriving, weighed or moving (see WeighingTrigger).
+    pub phase: Phase,
     pub motion: bool,
     pub frames: u64,
     pub last_frame_at: Option<i64>,
@@ -113,6 +119,20 @@ pub enum ScaleEvent {
     },
     Weighed(Weighing),
     Reweighed(Weighing),
+    /// The weighed truck's weight has left its band: nothing more is put
+    /// down to it until the deck settles again.
+    Moving {
+        weight: f64,
+        locked: f64,
+        unit: Unit,
+    },
+    /// Settled again after moving, but not a new weighing (TriggerEvent::Stopped).
+    Stopped {
+        weight: f64,
+        locked: f64,
+        same: bool,
+        unit: Unit,
+    },
     #[allow(dead_code)] // the pipeline only needs to know the deck is clear
     Cleared {
         weight: f64,
@@ -145,6 +165,8 @@ pub fn spread(last: Option<i64>, now: i64, n: usize) -> Vec<i64> {
 }
 
 const UNSETTLED_AFTER_MS: i64 = 15_000;
+/// How far back the readings put in the log go.
+const TRACE_SECONDS: i64 = 30;
 const UNSETTLED_EVERY_MS: i64 = 30_000;
 
 pub struct ScaleCore {
@@ -175,6 +197,7 @@ impl ScaleCore {
                 unit: settings.unit,
                 settled: false,
                 loaded: false,
+                phase: Phase::Empty,
                 motion: false,
                 frames: 0,
                 last_frame_at: None,
@@ -199,6 +222,7 @@ impl ScaleCore {
         self.trigger.last_weighing = previous.trigger.last_weighing;
         self.status.last_weighing = previous.status.last_weighing.clone();
         self.status.loaded = !self.trigger.armed;
+        self.status.phase = self.trigger.phase();
     }
 
     pub fn status(&self) -> &ScaleStatus {
@@ -255,13 +279,24 @@ impl ScaleCore {
             self.last_chunk_at = Some(now);
         }
         for (reading, at) in readings.into_iter().zip(times) {
+            let loaded_before = !self.trigger.armed;
             let event = self.trigger.push(&reading, at);
             let (settled, loaded, unit) = (self.trigger.settled, !self.trigger.armed, reading.unit.unwrap_or(self.unit));
-            self.set_status(now, false, |s| {
+            let phase = self.trigger.phase();
+            if phase != self.status.phase {
+                (self.sink)(ScaleEvent::Note(format!(
+                    "scale: {} -> {} at {}",
+                    self.status.phase.name(),
+                    phase.name(),
+                    super::frames::format_weight(reading.weight, unit)
+                )));
+            }
+            self.set_status(now, phase != self.status.phase, |s| {
                 s.weight = Some(reading.weight);
                 s.unit = unit;
                 s.settled = settled;
                 s.loaded = loaded;
+                s.phase = phase;
                 s.motion = reading.motion;
                 s.frames += 1;
                 s.last_frame_at = Some(now);
@@ -272,27 +307,59 @@ impl ScaleCore {
                     self.arrived_at = Some(now);
                     (self.sink)(ScaleEvent::Arrived)
                 }
-                Some(TriggerEvent::Weighed { weight, unit, gross, estimated, .. }) => {
+                Some(TriggerEvent::Weighed { weight, unit, gross, estimated, follows, .. }) => {
                     self.arrived_at = None;
-                    let weighing = Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate: None, previous: None, estimated };
+                    if follows.is_some() {
+                        self.trace(now);
+                    }
+                    let weighing = Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate: None, previous: None, estimated, follows };
                     self.set_status(now, true, |s| s.last_weighing = Some(weighing.clone()));
                     (self.sink)(ScaleEvent::Weighed(weighing));
                 }
                 Some(TriggerEvent::Reweighed { weight, previous, unit, gross, .. }) => {
                     // More of the same truck on the deck: the weighing is
                     // corrected, its plate kept.
+                    self.arrived_at = None;
+                    self.trace(now);
                     let plate = self.status.last_weighing.as_ref().and_then(|w| w.plate.clone());
-                    let weighing = Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate, previous: Some(previous), estimated: false };
+                    let weighing =
+                        Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate, previous: Some(previous), estimated: false, follows: None };
                     self.set_status(now, true, |s| s.last_weighing = Some(weighing.clone()));
                     (self.sink)(ScaleEvent::Reweighed(weighing));
                 }
+                Some(TriggerEvent::Moving { weight, locked, .. }) => {
+                    // Counted as arriving afresh, for saying it has not settled.
+                    self.arrived_at = Some(now);
+                    self.trace(now);
+                    (self.sink)(ScaleEvent::Moving { weight, locked, unit });
+                }
+                Some(TriggerEvent::Stopped { weight, locked, same, .. }) => {
+                    if same {
+                        self.arrived_at = None;
+                    }
+                    self.trace(now);
+                    (self.sink)(ScaleEvent::Stopped { weight, locked, same, unit });
+                }
                 Some(TriggerEvent::Cleared { weight, .. }) => {
                     self.arrived_at = None;
+                    if loaded_before {
+                        self.trace(now);
+                    }
                     self.set_status(now, true, |s| s.loaded = false);
                     (self.sink)(ScaleEvent::Cleared { weight, at: now });
                 }
             }
             self.say_if_unsettled(now);
+        }
+    }
+
+    /// What the deck read over the last half minute, into the log: when a
+    /// truck is moving, settles again, or a new one is weighed behind it, a
+    /// bug report then shows exactly what the scale did.
+    fn trace(&self, now: i64) {
+        let trace = self.trigger.trace(now, TRACE_SECONDS);
+        if !trace.is_empty() {
+            (self.sink)(ScaleEvent::Note(format!("scale readings, last {TRACE_SECONDS} s, every 0.5 s (m: motion flag): {trace}")));
         }
     }
 
@@ -304,7 +371,8 @@ impl ScaleCore {
     fn say_if_unsettled(&mut self, now: i64) {
         let Some(arrived_at) = self.arrived_at else { return };
         let said_lately = self.unsettled_said_at.is_some_and(|at| at >= arrived_at && now - at < UNSETTLED_EVERY_MS);
-        if !self.trigger.armed || now - arrived_at < UNSETTLED_AFTER_MS || said_lately {
+        let waiting = self.trigger.armed || self.trigger.phase() == Phase::Moving;
+        if !waiting || now - arrived_at < UNSETTLED_AFTER_MS || said_lately {
             return;
         }
         if let Some((min, max, motion, tolerance)) = self.trigger.window_spread() {
@@ -697,6 +765,37 @@ mod tests {
         assert!(events.lock().unwrap().iter().any(|e| matches!(e, ScaleEvent::Unsettled { unit: Unit::Lb, .. })));
         assert_eq!((said[0].1, said[0].2, said[0].3), (35_310.0, 35_810.0, false));
         assert!(said[0].0 >= 15 && said[1].0 >= 45);
+    }
+
+    #[test]
+    fn tells_the_log_how_a_truck_pulling_on_behind_another_went() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let seen = events.clone();
+        let sink: Sink = Arc::new(move |e| seen.lock().unwrap().push(e));
+        let mut core = ScaleCore::new(&settings(), sink, 0);
+        let mut now = 0;
+        let mut feed = |core: &mut ScaleCore, n: usize, w: u32| {
+            for _ in 0..n {
+                core.on_data(&frame(w), now);
+                now += 100;
+            }
+        };
+        feed(&mut core, 10, 0);
+        feed(&mut core, 30, 32_000); // weighed
+        assert_eq!(core.status().phase, Phase::Weighed);
+        feed(&mut core, 10, 20_000); // driving off
+        assert_eq!(core.status().phase, Phase::Moving);
+        feed(&mut core, 30, 27_500); // the next truck
+        let events = events.lock().unwrap();
+        let weighings: Vec<_> = events.iter().filter_map(|e| if let ScaleEvent::Weighed(w) = e { Some((w.weight, w.follows)) } else { None }).collect();
+        assert_eq!(weighings, [(32_000.0, None), (27_500.0, Some(32_000.0))]);
+        assert!(events.iter().any(|e| matches!(e, ScaleEvent::Moving { locked: 32_000.0, weight: 20_000.0, .. })));
+        let notes: Vec<&str> = events.iter().filter_map(|e| if let ScaleEvent::Note(n) = e { Some(n.as_str()) } else { None }).collect();
+        for change in ["empty -> arriving", "arriving -> weighed", "weighed -> moving", "moving -> weighed"] {
+            assert!(notes.iter().any(|n| n.starts_with(&format!("scale: {change}"))), "{change} in {notes:?}");
+        }
+        assert!(notes.iter().any(|n| n.starts_with("scale readings, last 30 s") && n.contains("32000 32000") && n.contains("20000")), "{notes:?}");
+        assert_eq!(core.status().last_weighing.as_ref().unwrap().follows, Some(32_000.0));
     }
 
     #[test]

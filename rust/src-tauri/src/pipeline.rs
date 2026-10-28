@@ -14,6 +14,17 @@
 //! entry's. If the scale settles heavier (the trailer rolled on after the
 //! first settle), the same entry takes the new weight.
 //!
+//! A truck can pull on before the one ahead has left, so the deck never
+//! reads clear between them (Hoffman, 2026-10-28). The scale says when the
+//! weighed truck starts to move (frames.rs, WeighingTrigger): from then on it
+//! is frozen - no more frames, no new plate - and the frames go to whatever
+//! comes next instead. When the deck settles again, it was either the same
+//! truck (the frames are dropped and it carries on), or the next truck,
+//! which gets an entry of its own with the plate read since. So a truck with
+//! no plate does not take the plate of the one behind it. Each truck has a
+//! number in the log, so a bug report shows which frames, plates and weights
+//! went where.
+//!
 //! Unlike the Electron app there is no vehicle detector: the scale is what
 //! says a truck is there, the reader finds every plate in the whole frame,
 //! and plate_choice picks the truck's (the biggest, toward the side the
@@ -33,7 +44,7 @@ use crate::plate_choice::{self, Rules};
 use crate::scale::frames::format_weight;
 use crate::scale::reader::Weighing;
 use crate::stamp::{self, Corner, Stamp};
-use crate::truck_photos::{Photo, Truck};
+use crate::truck_photos::{Photo, Plate, Truck};
 use crate::{log, AppState};
 
 /// A plate this sure, unchanged for a few frames after the truck settled,
@@ -47,13 +58,31 @@ const FEED_FPS: f64 = 2.0;
 
 /// On an entry weighed without the scale settling, until it does.
 const ESTIMATED_NOTE: &str = "weighed while the scale was still moving";
+/// On an entry for a truck that pulled on before the one ahead had left.
+const FOLLOWS_NOTE: &str = "pulled on before the truck ahead had left";
 
 #[derive(Debug)]
 pub enum Event {
     Arrived,
     Weighed(Weighing),
     Reweighed(Weighing),
+    /// The weighed truck has started to move (see frames.rs).
+    Moving,
+    /// The deck settled again after moving, without a new weighing: back at
+    /// the truck's weight (`same`), or lighter as it pulls off.
+    Stopped {
+        weight: f64,
+        same: bool,
+    },
     Cleared,
+}
+
+/// Do the plates read since the weighed truck began to move say another
+/// truck is coming on? Only a plate read surely - in two frames, or once
+/// very surely - and not the weighed truck's own.
+pub fn another_plate(weighed: Option<&Plate>, since_moving: Option<&Plate>) -> bool {
+    let Some(next) = since_moving.filter(|p| p.frames >= 2 || p.confidence >= PLATE_CONFIDENT) else { return false };
+    weighed.is_none_or(|w| plate_choice::normalize(&w.text) != plate_choice::normalize(&next.text))
 }
 
 /// What has been written to the history for the truck, to tell what changed.
@@ -70,6 +99,10 @@ struct Written {
 /// The truck on the deck now.
 #[derive(Default)]
 struct Session {
+    /// Counts up from the app's start, for the log.
+    number: u64,
+    /// The number of the truck ahead, when this one pulled on before it left.
+    follows: Option<u64>,
     truck: Truck,
     /// Set when it settles; a reweigh changes the weight.
     weighing: Option<Weighing>,
@@ -81,6 +114,13 @@ struct Session {
     capturing: bool,
     /// The deck cleared, or the next truck came.
     over: bool,
+    /// Weighed, and moving since: no frames are put down to it until the
+    /// scale says whether it is still the same truck on the deck.
+    frozen: bool,
+    /// A reweigh held back because the camera saw another plate come on: it
+    /// may be the next truck's front on the deck. Applied if the deck clears
+    /// with no next truck weighed; dropped if one is.
+    held: Option<Weighing>,
     /// Why no photo, for the entry's note.
     camera_error: Option<String>,
 }
@@ -91,6 +131,9 @@ type Shared = Arc<Mutex<Session>>;
 struct Pipeline {
     app: AppHandle,
     current: Arc<Mutex<Option<Shared>>>,
+    /// While the weighed truck moves: the frames of what comes on next.
+    next: Arc<Mutex<Option<Shared>>>,
+    trucks: Arc<std::sync::atomic::AtomicU64>,
     /// One history write at a time.
     writing: Arc<tokio::sync::Mutex<()>>,
 }
@@ -98,7 +141,7 @@ struct Pipeline {
 /// Starts the task; send the scale's events to what comes back.
 pub fn start(app: AppHandle) -> mpsc::UnboundedSender<Event> {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let pipeline = Pipeline { app, current: Arc::default(), writing: Arc::default() };
+    let pipeline = Pipeline { app, current: Arc::default(), next: Arc::default(), trucks: Arc::default(), writing: Arc::default() };
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             let p = pipeline.clone();
@@ -106,6 +149,7 @@ pub fn start(app: AppHandle) -> mpsc::UnboundedSender<Event> {
                 Event::Arrived => {
                     p.session(true);
                 }
+                Event::Weighed(w) if w.follows.is_some() => p.on_next_truck(w),
                 Event::Weighed(w) => {
                     let session = p.session(false);
                     session.lock().unwrap().weighing = Some(w);
@@ -114,11 +158,50 @@ pub fn start(app: AppHandle) -> mpsc::UnboundedSender<Event> {
                 }
                 Event::Reweighed(w) => {
                     let Some(session) = p.current.lock().unwrap().clone() else { continue };
+                    let number = session.lock().unwrap().number;
+                    if let Some(plate) = p.next_plate_if_another(&session) {
+                        p.log(format!(
+                            "truck {number}: {} on the scale, but plate {} has come on since it moved: maybe the next truck's front, so held until it is clear which",
+                            format_weight(w.weight, w.unit),
+                            plate.text
+                        ));
+                        session.lock().unwrap().held = Some(w);
+                        continue;
+                    }
+                    p.resume(&session);
                     tauri::async_runtime::spawn(async move { p.on_reweighed(session, w).await });
                 }
+                Event::Moving => p.on_moving(),
+                Event::Stopped { weight, same } => {
+                    let Some(session) = p.current.lock().unwrap().clone() else { continue };
+                    let number = session.lock().unwrap().number;
+                    if same {
+                        p.log(format!("truck {number}: settled back at its weight; it is still the truck on the scale"));
+                        p.resume(&session);
+                    } else {
+                        let plate = p.next.lock().unwrap().as_ref().and_then(|n| n.lock().unwrap().truck.plate());
+                        p.log(format!(
+                            "truck {number}: stopped at {weight} partly off the scale; frames still go to what comes next{}",
+                            plate.map_or(String::new(), |p| format!(" (plate {} read since it moved)", p.text))
+                        ));
+                    }
+                }
                 Event::Cleared => {
-                    if let Some(session) = p.current.lock().unwrap().take() {
-                        session.lock().unwrap().over = true;
+                    if let Some(next) = p.next.lock().unwrap().take() {
+                        next.lock().unwrap().over = true;
+                    }
+                    let current = p.current.lock().unwrap().take();
+                    if let Some(session) = current {
+                        let held = {
+                            let mut s = session.lock().unwrap();
+                            s.over = true;
+                            s.held.take()
+                        };
+                        p.log(format!("truck {}: off the scale", session.lock().unwrap().number));
+                        // Nothing else was weighed: the extra weight left with it.
+                        if let Some(w) = held {
+                            tauri::async_runtime::spawn(async move { p.on_reweighed(session, w).await });
+                        }
                     }
                 }
             }
@@ -147,6 +230,11 @@ impl Pipeline {
         log(&self.app, message);
     }
 
+    fn fresh(&self) -> Shared {
+        let number = self.trucks.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        Arc::new(Mutex::new(Session { number, ..Default::default() }))
+    }
+
     /// The truck on the deck, a new one if there is none. `arrived`: it is
     /// only rolling on, so the frames start now.
     fn session(&self, arrived: bool) -> Shared {
@@ -155,19 +243,125 @@ impl Pipeline {
             if let Some(s) = current.as_ref().filter(|s| !s.lock().unwrap().over) {
                 return s.clone();
             }
-            let fresh = Shared::default();
+            let fresh = self.fresh();
             *current = Some(fresh.clone());
             fresh
         };
+        let number = session.lock().unwrap().number;
         if arrived {
-            self.log("a truck is coming onto the scale");
+            self.log(format!("truck {number}: coming onto the scale"));
             self.start_capture(&session);
+        } else {
+            self.log(format!("truck {number}: weighed with no arrival seen"));
         }
         session
     }
 
-    fn is_current(&self, session: &Shared) -> bool {
-        self.current.lock().unwrap().as_ref().is_some_and(|c| Arc::ptr_eq(c, session))
+    /// The plate read since the weighed truck began to move, when it is
+    /// another truck's.
+    fn next_plate_if_another(&self, session: &Shared) -> Option<Plate> {
+        let weighed = session.lock().unwrap().truck.plate();
+        let next = self.next.lock().unwrap().as_ref().and_then(|n| n.lock().unwrap().truck.plate());
+        another_plate(weighed.as_ref(), next.as_ref()).then_some(next).flatten()
+    }
+
+    /// The weighed truck has started to move: it keeps what it has, and the
+    /// frames from now on are kept apart, for whatever settles next.
+    fn on_moving(&self) {
+        let Some(session) = self.current.lock().unwrap().clone() else { return };
+        let summary = {
+            let mut s = session.lock().unwrap();
+            if s.weighing.is_none() {
+                return;
+            }
+            s.frozen = true;
+            let plate = s.truck.plate().map_or("no plate".to_string(), |p| format!("plate {} ({:.0}%, {} frames)", p.text, p.confidence * 100.0, p.frames));
+            format!("truck {}: moving; it keeps {plate} and its photo, and frames from now on are kept apart", s.number)
+        };
+        self.log(summary);
+        let mut next = self.next.lock().unwrap();
+        if next.as_ref().is_none_or(|n| n.lock().unwrap().over) {
+            let fresh = self.fresh();
+            *next = Some(fresh.clone());
+            drop(next);
+            self.start_capture(&fresh);
+        }
+    }
+
+    /// The same truck after all: the frames kept apart are dropped, and it
+    /// takes frames again.
+    fn resume(&self, session: &Shared) {
+        if let Some(next) = self.next.lock().unwrap().take() {
+            let mut n = next.lock().unwrap();
+            n.over = true;
+            if n.truck.frames() > 0 {
+                self.log(format!("dropping the {} frames taken while truck {} moved", n.truck.frames(), session.lock().unwrap().number));
+            }
+        }
+        let was_frozen = std::mem::replace(&mut session.lock().unwrap().frozen, false);
+        if was_frozen {
+            self.start_capture(session);
+        }
+    }
+
+    /// The scale says the truck ahead has gone and the next is on: the next
+    /// gets an entry of its own, with the frames taken since the one ahead
+    /// began to move - unless they read the same plate as the one ahead.
+    fn on_next_truck(&self, w: Weighing) {
+        let ahead = self.current.lock().unwrap().clone();
+        let next = self.next.lock().unwrap().take().unwrap_or_else(|| self.fresh());
+        if let Some(ahead) = &ahead {
+            let (number, plate) = {
+                let a = ahead.lock().unwrap();
+                (a.number, a.truck.plate())
+            };
+            let next_plate = next.lock().unwrap().truck.plate();
+            let same_plate = plate
+                .as_ref()
+                .zip(next_plate.as_ref())
+                .is_some_and(|(a, n)| plate_choice::normalize(&a.text) == plate_choice::normalize(&n.text) && !another_plate(Some(a), Some(n)));
+            if same_plate {
+                // Back on, weighing differently: more of it is a correction, less is not.
+                let weighed = ahead.lock().unwrap().weighing.as_ref().map_or(0.0, |w| w.weight);
+                self.log(format!(
+                    "truck {number}: the scale took {} for the next truck, but the camera reads the same plate: the same truck",
+                    format_weight(w.weight, w.unit)
+                ));
+                next.lock().unwrap().over = true;
+                self.resume(ahead);
+                if w.weight > weighed {
+                    let (p, ahead, reweigh) = (self.clone(), ahead.clone(), Weighing { previous: Some(weighed), follows: None, ..w });
+                    tauri::async_runtime::spawn(async move { p.on_reweighed(ahead, reweigh).await });
+                }
+                return;
+            }
+            let held = {
+                let mut a = ahead.lock().unwrap();
+                a.over = true;
+                a.held.take()
+            };
+            if let Some(h) = held {
+                self.log(format!("truck {number}: dropping the held {}: it was the next truck coming on", format_weight(h.weight, h.unit)));
+            }
+            let summary = plate.map_or("no plate".to_string(), |p| format!("plate {}", p.text));
+            self.log(format!("truck {number}: done ({summary}); the next truck pulled on before it had left"));
+        }
+        let number = {
+            let mut n = next.lock().unwrap();
+            n.follows = ahead.as_ref().map(|a| a.lock().unwrap().number);
+            n.weighing = Some(w.clone());
+            n.number
+        };
+        let plate = next.lock().unwrap().truck.plate();
+        self.log(format!(
+            "truck {number}: weighed {}, {}",
+            format_weight(w.weight, w.unit),
+            plate.map_or("no plate read yet".to_string(), |p| format!("plate {} read as it came on", p.text))
+        ));
+        *self.current.lock().unwrap() = Some(next.clone());
+        self.start_capture(&next);
+        let p = self.clone();
+        tauri::async_runtime::spawn(async move { p.on_weighed(next).await });
     }
 
     fn stamp(&self, frame: &[u8], taken_at: DateTime<Local>, weight_text: &str, plate: Option<&str>) -> Vec<u8> {
@@ -219,7 +413,8 @@ impl Pipeline {
         let every = Duration::from_secs_f64(s["plates"]["retrySeconds"].as_f64().filter(|&n| n > 0.0).unwrap_or(1.0).clamp(0.25, 30.0));
         let mut burst = Burst::start(url, FEED_FPS).map_err(|err| self.log(format!("full-resolution feed: {err}; using single snapshots"))).ok();
         let (mut taken, mut steady) = (0u32, 0u32);
-        while taken < max_frames && !session.lock().unwrap().over && self.is_current(session) {
+        let number = session.lock().unwrap().number;
+        while taken < max_frames && !session.lock().unwrap().over && !session.lock().unwrap().frozen {
             let started = tokio::time::Instant::now();
             let frame = match burst.as_mut() {
                 Some(b) => b.next(PHOTO_TIMEOUT).await.map(|(jpeg, _)| jpeg).ok_or_else(|| "the full-resolution feed sent nothing".to_string()),
@@ -259,14 +454,22 @@ impl Pipeline {
                 None
             };
             let seen = read.as_ref().map(|r| format!("{} {:.0}%", r.text, r.confidence * 100.0));
-            let change = session.lock().unwrap().truck.add(jpeg, taken_at, read, settled);
+            let change = {
+                let mut s = session.lock().unwrap();
+                // It began to move while this frame was read: the frame may be
+                // of the next truck, so it is not this one's.
+                if s.frozen || s.over {
+                    break;
+                }
+                s.truck.add(jpeg, taken_at, read, settled)
+            };
             if change.plate || change.photo {
                 let plate = session.lock().unwrap().truck.plate();
                 let what = match (change.plate, &plate) {
                     (true, Some(p)) => format!("plate {} ({:.0}%, {} frame{})", p.text, p.confidence * 100.0, p.frames, if p.frames == 1 { "" } else { "s" }),
                     _ => "a closer picture".into(),
                 };
-                self.log(format!("frame {taken}: {what}{}", seen.map_or(String::new(), |s| format!(" - read {s}"))));
+                self.log(format!("truck {number}, frame {taken}: {what}{}", seen.map_or(String::new(), |s| format!(" - read {s}"))));
                 steady = 0;
                 self.sync(session, false).await;
             } else if settled {
@@ -292,7 +495,7 @@ impl Pipeline {
         let summary = {
             let s = session.lock().unwrap();
             let plate = s.truck.plate().map_or("no plate".to_string(), |p| format!("plate {} ({:.0}%, {} frames)", p.text, p.confidence * 100.0, p.frames));
-            format!("{} frames of the truck; {plate}", s.truck.frames())
+            format!("truck {number}: {} frames; {plate}", s.truck.frames())
         };
         self.log(summary);
     }
@@ -304,8 +507,11 @@ impl Pipeline {
         if s["scale"]["capturePhoto"] == false {
             return;
         }
-        let weighing = session.lock().unwrap().weighing.clone().expect("set before");
-        self.log(format!("{} on the scale - photographing", format_weight(weighing.weight, weighing.unit)));
+        let (weighing, number) = {
+            let s = session.lock().unwrap();
+            (s.weighing.clone().expect("set before"), s.number)
+        };
+        self.log(format!("truck {number}: {} on the scale - photographing", format_weight(weighing.weight, weighing.unit)));
         let camera: CameraSettings = serde_json::from_value(s["camera"].clone()).unwrap_or_default();
         if camera.url(true).is_none() {
             self.log("weighing with no camera set up - logged without a photo");
@@ -325,7 +531,8 @@ impl Pipeline {
     async fn on_reweighed(&self, session: Shared, weighing: Weighing) {
         let previous = weighing.previous.unwrap_or_default();
         self.log(format!(
-            "{} on the scale - more of the truck; correcting {}",
+            "truck {}: {} on the scale - more of the truck; correcting {}",
+            session.lock().unwrap().number,
             format_weight(weighing.weight, weighing.unit),
             format_weight(previous, weighing.unit)
         ));
@@ -351,8 +558,9 @@ impl Pipeline {
         let (weighing, plate, photo, entry_id, written, corrected, note) = {
             let s = session.lock().unwrap();
             let Some(weighing) = s.weighing.clone() else { return };
-            let note =
-                if weighing.estimated { ESTIMATED_NOTE.to_string() } else { s.camera_error.as_ref().map(|e| format!("photo failed: {e}")).unwrap_or_default() };
+            let photo_failed = s.camera_error.as_ref().filter(|_| s.truck.photo().is_none()).map(|e| format!("photo failed: {e}"));
+            let notes = [weighing.estimated.then(|| ESTIMATED_NOTE.to_string()), photo_failed, s.follows.map(|_| FOLLOWS_NOTE.to_string())];
+            let note = notes.into_iter().flatten().collect::<Vec<_>>().join("; ");
             (weighing, s.truck.plate(), s.truck.photo().cloned(), s.entry_id.clone(), s.written.clone(), s.corrected.clone(), note)
         };
         if entry_id.is_none() && photo.is_none() && !without_photo {
@@ -383,7 +591,7 @@ impl Pipeline {
                     unit: Some(weighing.unit.to_string()),
                     at: Some(weighing.at),
                     plate: plate_json.clone(),
-                    note: if stamped.is_none() || weighing.estimated { note } else { String::new() },
+                    note,
                     ..Default::default()
                 };
                 // A reweigh that came before the entry was written goes on it now.
@@ -404,9 +612,7 @@ impl Pipeline {
                     patch["photoAt"] = now_iso().into();
                 }
                 // The estimate's note goes once the scale has settled.
-                if stamped.is_some() || !weighing.estimated {
-                    patch["note"] = if weighing.estimated { ESTIMATED_NOTE.into() } else { "".into() };
-                }
+                patch["note"] = note.into();
                 history.update(id, &object(patch), stamped.as_deref())
             }
         };
@@ -460,4 +666,24 @@ pub async fn read_plate_now(app: &AppHandle) -> Result<Value, String> {
         "ms": started.elapsed().as_millis() as u64,
         "reader": state.plates.status(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plate(text: &str, confidence: f64, frames: u32) -> Plate {
+        Plate { text: text.into(), confidence, frames }
+    }
+
+    #[test]
+    fn another_plate_is_one_read_surely_that_is_not_the_weighed_trucks() {
+        let ahead = plate("P865012", 0.9, 6);
+        // Hoffman, 2026-10-28: the truck ahead had no plate; the one behind's is another truck's.
+        assert!(another_plate(None, Some(&plate("7KX2210", 0.8, 3))));
+        assert!(another_plate(Some(&ahead), Some(&plate("7KX2210", 0.95, 1))));
+        assert!(!another_plate(Some(&ahead), Some(&plate("P86-5012", 0.8, 4)))); // its own, written differently
+        assert!(!another_plate(None, Some(&plate("7KX2210", 0.6, 1)))); // one unsure read
+        assert!(!another_plate(Some(&ahead), None));
+    }
 }
