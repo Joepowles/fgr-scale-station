@@ -1,0 +1,94 @@
+name: Release after merge
+
+# A pull request merged into main is released: the Rust app's next patch
+# version (0.2.7, then 0.2.8) with the PR's entry at the top of CHANGELOG.md
+# (scripts/release-after-merge.js), committed to main and tagged, and then
+# the release workflow is started on that tag to build the installer and
+# publish it. It is a stable release, so every PC takes it.
+#
+# Not released: a PR labelled no-release, one that changes nothing the app
+# is built from (only workflows, docs, the relay), and one that sets the
+# version itself (tauri.conf.json changed): that one is tagged by hand.
+#
+# A merged PR that was not released, or whose run failed, can be released
+# from the Actions tab: Run workflow, with the PR's number.
+on:
+  # pull_request_target, not pull_request, so a PR from a fork gets a token
+  # that can push. Nothing from the PR's branch is run: main is checked out.
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Number of the merged pull request to release
+        required: true
+
+permissions:
+  contents: write
+  actions: write
+  pull-requests: write
+
+# One at a time, so two quick merges are 0.2.8 and 0.2.9, not both 0.2.8.
+concurrency:
+  group: release-after-merge
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.merged }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: The pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+        run: |
+          gh pr view "$PR" --json number,title,body,state,labels,files > "$RUNNER_TEMP/pr.json"
+          node -e '
+            const pr = require(process.argv[1]);
+            const app = /^(rust\/|src\/renderer\/|plate-reader\/|resources\/|scripts\/build-plate-reader\.js$|CHANGELOG\.md$)/;
+            const files = pr.files.map((f) => f.path);
+            const why =
+              pr.state !== "MERGED" ? "it is not merged" :
+              pr.labels.some((l) => l.name === "no-release") ? "it is labelled no-release" :
+              files.includes("rust/src-tauri/tauri.conf.json") ? "it sets the version itself" :
+              !files.some((f) => app.test(f)) ? "it changes nothing the app is built from" : "";
+            if (why) console.log(`::notice::Not released: #${pr.number} ${why}`);
+            console.log(`release=${why ? "no" : "yes"}`);
+          ' "$RUNNER_TEMP/pr.json" | tee -a "$GITHUB_OUTPUT"
+          echo "number=$PR" >> "$GITHUB_OUTPUT"
+      - name: Version and changelog
+        id: version
+        if: steps.pr.outputs.release == 'yes'
+        env:
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          version=$(node scripts/release-after-merge.js "$RUNNER_TEMP/pr.json")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Rust app $version, changelog for #$PR"
+          git tag "v$version"
+          # Both or neither, so main never has a version with no tag.
+          git push --atomic origin HEAD:main "v$version"
+      # A tag pushed with this workflow's token does not start other
+      # workflows, so the release workflow is started on the tag by hand.
+      # Started that way on a tag, it builds and publishes as for a pushed one.
+      - name: Start the build
+        if: steps.pr.outputs.release == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          gh workflow run release.yml --ref "v$VERSION" -f app=rust
+          gh pr comment "$PR" --body "Released as $VERSION: the installer is building ([release workflow](${{ github.server_url }}/${{ github.repository }}/actions/workflows/release.yml)) and goes up on the [v$VERSION release](${{ github.server_url }}/${{ github.repository }}/releases/tag/v$VERSION) when done."

@@ -42,6 +42,12 @@ Done by `.github/workflows/release.yml` on a Windows runner when a `v0.1.*` tag 
 pushed (newer tags build `rust/`): it fetches ffmpeg, builds the plate reader and fetches its models, packages with electron-builder and publishes the installer to the
 GitHub release. The installed app auto-updates from those releases.
 
+Merging a pull request into main releases it
+(`.github/workflows/release-after-merge.yml`): the next patch version, the
+PR's entry at the top of `CHANGELOG.md`, a tag, and the build above. The
+entry is the PR's `## Changelog` section, written for the yard, or its title
+if it has none. Label a PR `no-release` to merge it without a release.
+
 To build by hand on a Windows machine:
 
     node scripts/make-icon.js
