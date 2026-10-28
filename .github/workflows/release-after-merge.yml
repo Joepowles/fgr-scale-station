@@ -13,9 +13,10 @@ name: Release after merge
 # A merged PR that was not released, or whose run failed, can be released
 # from the Actions tab: Run workflow, with the PR's number.
 on:
-  # pull_request_target, not pull_request, so a PR from a fork gets a token
-  # that can push. Nothing from the PR's branch is run: main is checked out.
-  pull_request_target:
+  # A PR from a fork gets a token here that cannot push, so its run fails:
+  # release it by hand as above. (pull_request_target would let it push, but
+  # GitHub turns that event off on public repositories from December 2026.)
+  pull_request:
     types: [closed]
     branches: [main]
   workflow_dispatch:
@@ -39,11 +40,11 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.merged }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: main
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
       - name: The pull request
