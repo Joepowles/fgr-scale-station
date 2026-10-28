@@ -2,6 +2,11 @@
 
 Newest first. The app shows this file on the Updates tab of its settings.
 
+## 0.2.10
+
+- A truck is saved at the weight it held longest, not the first weight it settled at. A truck could settle 20 lb light while it eased back on its brakes, and that weight was kept even though it then held the true weight for a minute.
+- When the driver gets out, the lighter weight is not saved. The truck keeps the weight it held with the driver in the cab, and the log notes it.
+
 ## 0.2.9
 
 - A truck that pulls onto the scale before the one ahead has left gets its own history entry, with its own weight and plate. Before, it could be lost, its weight could replace the first truck's, or its plate could end up on the first truck's photo.
