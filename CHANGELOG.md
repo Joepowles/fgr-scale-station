@@ -2,6 +2,10 @@
 
 Newest first. The app shows this file on the Updates tab of its settings.
 
+## 0.2.8
+
+- Crash reports: don't report a run the PC took down with it.
+
 ## 0.2.7
 
 - The app can be open on as many PCs as you like. The scale's device server takes only a few connections, and the ticketing software and the website hold two of them, so the app could run on two PCs at most. Now one PC with the app open reads the scale and passes it on to the others on the network, so the app takes one connection however many PCs have it open. Every PC still weighs, photographs and keeps the history as before.
