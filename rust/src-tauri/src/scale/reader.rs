@@ -71,6 +71,10 @@ pub struct Weighing {
     /// Weighed without the scale settling (see WeighingTrigger).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub estimated: bool,
+    /// On a reweigh that is not more of the truck: how long (ms) this weight
+    /// held, longer than the one it corrects (see WeighingTrigger).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held: Option<i64>,
     /// Pulled on before the truck ahead, weighed at this, had left: the deck
     /// never read clear between them.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -312,18 +316,18 @@ impl ScaleCore {
                     if follows.is_some() {
                         self.trace(now);
                     }
-                    let weighing = Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate: None, previous: None, estimated, follows };
+                    let weighing = Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate: None, previous: None, estimated, follows, held: None };
                     self.set_status(now, true, |s| s.last_weighing = Some(weighing.clone()));
                     (self.sink)(ScaleEvent::Weighed(weighing));
                 }
-                Some(TriggerEvent::Reweighed { weight, previous, unit, gross, .. }) => {
-                    // More of the same truck on the deck: the weighing is
-                    // corrected, its plate kept.
+                Some(TriggerEvent::Reweighed { weight, previous, unit, gross, held, .. }) => {
+                    // More of the same truck on the deck, or a weight it has
+                    // held longer: the weighing is corrected, its plate kept.
                     self.arrived_at = None;
                     self.trace(now);
                     let plate = self.status.last_weighing.as_ref().and_then(|w| w.plate.clone());
                     let weighing =
-                        Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate, previous: Some(previous), estimated: false, follows: None };
+                        Weighing { weight, unit: unit.unwrap_or(self.unit), gross, at: now, plate, previous: Some(previous), estimated: false, follows: None, held };
                     self.set_status(now, true, |s| s.last_weighing = Some(weighing.clone()));
                     (self.sink)(ScaleEvent::Reweighed(weighing));
                 }
@@ -339,6 +343,15 @@ impl ScaleCore {
                     }
                     self.trace(now);
                     (self.sink)(ScaleEvent::Stopped { weight, locked, same, unit });
+                }
+                Some(TriggerEvent::Kept { weight, locked, .. }) => {
+                    self.trace(now);
+                    (self.sink)(ScaleEvent::Note(format!(
+                        "settled at {}, lighter than the {} weighed but still on the scale (the driver getting out?): {} kept",
+                        super::frames::format_weight(weight, unit),
+                        super::frames::format_weight(locked, unit),
+                        super::frames::format_weight(locked, unit)
+                    )));
                 }
                 Some(TriggerEvent::Cleared { weight, .. }) => {
                     self.arrived_at = None;
