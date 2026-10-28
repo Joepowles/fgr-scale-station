@@ -4,9 +4,12 @@
 // of it, and a new yard sends reports with nothing set up.
 //
 //   POST /report   { title, body, labels? }   ->  201 { number, url }
+//   /samples...    sample pictures from the yard (samples.js)
 //
 // Anything else gets a short text answer. Ten reports a minute from one
 // address is plenty; more than that is refused.
+
+import { samples } from './samples.js';
 
 const TITLE_MAX = 256;
 const BODY_MAX = 65536;
@@ -35,6 +38,7 @@ const openIssue = async ({ repo, token, title, body, labels, fetchFn }) => {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === '/samples' || url.pathname.startsWith('/samples/')) return samples(request, env, url.pathname);
     if (request.method !== 'POST' || url.pathname !== '/report') {
       return new Response('Falcon Scale Station bug report relay. POST /report.', { status: request.method === 'GET' ? 200 : 404 });
     }

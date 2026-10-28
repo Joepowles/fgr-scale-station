@@ -15,6 +15,7 @@ mod history;
 mod pipeline;
 mod plate_choice;
 mod plates;
+mod samples;
 mod scale;
 mod server;
 mod settings;
@@ -62,6 +63,7 @@ pub(crate) struct AppState {
     pub(crate) plates: plates::PlateReader,
     updater: std::sync::Arc<updater::Updater>,
     pub(crate) alerts: alerts_app::Alerts,
+    pub(crate) samples: samples::Samples,
     log: Mutex<VecDeque<String>>,
 }
 
@@ -146,6 +148,7 @@ fn start_scale(app: &AppHandle) {
         }
         ScaleEvent::Arrived => {
             let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Arrived);
+            samples::on_arrived(&handle);
             alerts_app::feed(&handle, alerts::Input::Arrived);
         }
         ScaleEvent::Weighed(w) => {
@@ -197,6 +200,7 @@ fn start_scale(app: &AppHandle) {
         ScaleEvent::Cleared { .. } => {
             log(&handle, "deck clear");
             let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Cleared);
+            samples::on_cleared(&handle);
             alerts_app::feed(&handle, alerts::Input::Cleared);
         }
     });
@@ -767,8 +771,10 @@ pub fn run() {
                 pipeline: pipeline::start(handle.clone()),
                 updater: updater::Updater::new(&handle, app.path().app_local_data_dir()?.join("updates")),
                 alerts: alerts_app::Alerts::new(),
+                samples: samples::Samples::new(&data_dir_for_window),
                 log: Mutex::new(VecDeque::new()),
             });
+            samples::start_uploader(handle.clone());
             if let Some(win) = app.get_webview_window("main") {
                 window_state::restore(&win, &data_dir_for_window, window_state::FILE);
                 window_state::track(&win, &data_dir_for_window, window_state::FILE);

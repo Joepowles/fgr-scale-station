@@ -1,17 +1,31 @@
 # The bug report relay. Deploy from this folder: wrangler deploy
 # Then: wrangler secret put GITHUB_TOKEN
+# And, to fetch sample pictures: wrangler secret put SAMPLES_KEY
 name = "scale-station-reports"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
 
 [vars]
 GITHUB_REPO = "Joepowles/fgr-scale-station"
+# Sample picture uploads (src/samples.js) are accepted through this day.
+SAMPLES_UNTIL = "2026-11-30"
 
 # Ten reports a minute from one address; a yard sends one at a time.
 [[ratelimits]]
 name = "REPORTS"
 namespace_id = "1001"
 simple = { limit = 10, period = 60 }
+
+# Sample uploads: a truck's pack every minute or so from one station.
+[[ratelimits]]
+name = "SAMPLE_UPLOADS"
+namespace_id = "1002"
+simple = { limit = 30, period = 60 }
+
+# Where the samples wait to be fetched; they expire after 30 days.
+[[kv_namespaces]]
+binding = "SAMPLE_STORE"
+id = "48bd13382f4e4635b1a6ea99e33a12c3"
 
 [observability]
 enabled = true

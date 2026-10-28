@@ -82,7 +82,8 @@ fn base_defaults() -> Value {
             "relayUrl": "https://scale-station-reports.joepowles.workers.dev",
             "repo": "Joepowles/fgr-scale-station",
             "githubToken": "",
-            "autoReport": true
+            "autoReport": true,
+            "sendSamples": false
         },
         "meta": { "version": 4 }
     })

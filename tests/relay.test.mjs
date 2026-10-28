@@ -52,3 +52,44 @@ test('a GitHub token problem is reported as the relay being broken, not the repo
   assert.equal(res.status, 502);
   assert.match((await res.json()).error, /GitHub answered 401: Bad credentials/);
 });
+
+// Sample pictures: a KV namespace as a Map.
+const kv = () => {
+  const m = new Map();
+  return {
+    m,
+    put: async (k, v, o) => { m.set(k, { v, meta: o.metadata, ttl: o.expirationTtl }); },
+    get: async (k) => m.get(k)?.v ?? null,
+    delete: async (k) => { m.delete(k); },
+    list: async () => ({ keys: [...m].map(([name, e]) => ({ name, metadata: e.meta })), list_complete: true })
+  };
+};
+const sampleEnv = (store, extra = {}) => ({ SAMPLE_STORE: store, SAMPLES_UNTIL: '2999-01-01', SAMPLES_KEY: 'k3y', ...extra });
+const put = (name, bytes = new Uint8Array([1, 2, 3])) => new Request(`https://relay.example/samples/${name}`, { method: 'PUT', body: bytes });
+const read = (path, method = 'GET', key = 'k3y') => new Request(`https://relay.example${path}`, { method, headers: key ? { authorization: `Bearer ${key}` } : {} });
+
+test('takes a sample upload, and hands it back only with the key', async () => {
+  const store = kv();
+  const res = await worker.fetch(put('HOFFMAN-PC/20261029-101500-t12.tar'), sampleEnv(store));
+  assert.equal(res.status, 201);
+  assert.equal(store.m.get('HOFFMAN-PC/20261029-101500-t12.tar').ttl, 30 * 24 * 3600);
+  assert.equal((await worker.fetch(read('/samples', 'GET', null), sampleEnv(store))).status, 401);
+  assert.equal((await worker.fetch(read('/samples', 'GET', 'wrong'), sampleEnv(store))).status, 401);
+  const list = await (await worker.fetch(read('/samples'), sampleEnv(store))).json();
+  assert.deepEqual(list.samples.map((s) => [s.name, s.size]), [['HOFFMAN-PC/20261029-101500-t12.tar', 3]]);
+  const one = await worker.fetch(read('/samples/HOFFMAN-PC/20261029-101500-t12.tar'), sampleEnv(store));
+  assert.deepEqual([...new Uint8Array(await one.arrayBuffer())], [1, 2, 3]);
+  assert.equal((await worker.fetch(read('/samples/HOFFMAN-PC/20261029-101500-t12.tar', 'DELETE'), sampleEnv(store))).status, 204);
+  assert.equal(store.m.size, 0);
+});
+
+test('refuses samples once uploads close, with odd names, or with no key set', async () => {
+  const store = kv();
+  assert.equal((await worker.fetch(put('PC/a.tar'), sampleEnv(store, { SAMPLES_UNTIL: '2020-01-01' }))).status, 410);
+  assert.equal((await worker.fetch(put('PC/a.tar'), sampleEnv(store, { SAMPLES_UNTIL: '' }))).status, 410);
+  assert.equal((await worker.fetch(put('PC/../a.tar'), sampleEnv(store))).status, 400);
+  assert.equal((await worker.fetch(put('PC/a.jpg'), sampleEnv(store))).status, 400);
+  assert.equal((await worker.fetch(put('PC/a.tar', new Uint8Array()), sampleEnv(store))).status, 400);
+  assert.equal((await worker.fetch(read('/samples'), sampleEnv(store, { SAMPLES_KEY: '' }))).status, 401);
+  assert.equal(store.m.size, 0);
+});
