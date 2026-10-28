@@ -14,6 +14,10 @@ name: Release (Windows installer)
 # electron job); from v0.2.0 on, the Rust app in rust/ (the rust job). Both
 # write the same feed files, so a PC on the Electron app's beta channel
 # takes the first Rust beta like any other update.
+#
+# A merged pull request is released by release-after-merge.yml, which tags
+# the next version and starts this workflow on the tag (Run workflow with a
+# tag picked builds and publishes just as a pushed tag does).
 on:
   push:
     tags: ['v*']
