@@ -9,8 +9,9 @@
 //   DELETE /samples/<station>/<visit>.tar   one, with the key
 //
 // Uploads are open to anyone, as reports are, but only until the date in
-// SAMPLES_UNTIL, only .tar, and at most 24 MB each: this is a temporary
-// drop, not storage. Reading needs the key.
+// SAMPLES_UNTIL, only a plain (uncompressed) tar, at most 24 MB, and never
+// over one already there: this is a temporary drop, not storage. Reading
+// needs the key.
 
 const SAMPLE_MAX = 24 * 1024 * 1024;
 const KEEP_SECONDS = 30 * 24 * 3600;
@@ -20,6 +21,12 @@ const json = (status, data) => new Response(JSON.stringify(data), { status, head
 
 // Open through the end of the SAMPLES_UNTIL day (UTC).
 export const open = (until, now = new Date()) => /^\d{4}-\d{2}-\d{2}$/.test(until || '') && now.toISOString().slice(0, 10) <= until;
+
+// A ustar archive, not a compressed one: it cannot unpack to more than its size.
+export const plainTar = (buffer) => {
+  const bytes = new Uint8Array(buffer);
+  return bytes.length >= 512 && String.fromCharCode(...bytes.subarray(257, 262)) === 'ustar';
+};
 
 const authorised = (request, env) => !!env.SAMPLES_KEY && request.headers.get('authorization') === `Bearer ${env.SAMPLES_KEY}`;
 
@@ -38,6 +45,12 @@ export async function samples(request, env, path) {
     if (Number(request.headers.get('content-length') || 0) > SAMPLE_MAX) return json(413, { error: 'The sample is too large.' });
     const body = await request.arrayBuffer();
     if (!body.byteLength || body.byteLength > SAMPLE_MAX) return json(body.byteLength ? 413 : 400, { error: 'The sample is empty or too large.' });
+    if (!plainTar(body)) return json(400, { error: 'Not a plain tar.' });
+    const existing = await store.get(name, 'stream');
+    if (existing !== null) {
+      await existing.cancel?.();
+      return json(409, { error: 'That sample is already here.' });
+    }
     await store.put(name, body, { expirationTtl: KEEP_SECONDS, metadata: { size: body.byteLength, at: new Date().toISOString() } });
     return json(201, { name, size: body.byteLength });
   }

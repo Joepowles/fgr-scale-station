@@ -65,7 +65,13 @@ const kv = () => {
   };
 };
 const sampleEnv = (store, extra = {}) => ({ SAMPLE_STORE: store, SAMPLES_UNTIL: '2999-01-01', SAMPLES_KEY: 'k3y', ...extra });
-const put = (name, bytes = new Uint8Array([1, 2, 3])) => new Request(`https://relay.example/samples/${name}`, { method: 'PUT', body: bytes });
+// The smallest plain tar the relay takes: a header with the ustar magic.
+const tarBytes = (fill = 0) => {
+  const b = new Uint8Array(1024).fill(fill, 0, 100);
+  b.set([...'ustar'].map((c) => c.charCodeAt(0)), 257);
+  return b;
+};
+const put = (name, bytes = tarBytes()) => new Request(`https://relay.example/samples/${name}`, { method: 'PUT', body: bytes });
 const read = (path, method = 'GET', key = 'k3y') => new Request(`https://relay.example${path}`, { method, headers: key ? { authorization: `Bearer ${key}` } : {} });
 
 test('takes a sample upload, and hands it back only with the key', async () => {
@@ -76,9 +82,9 @@ test('takes a sample upload, and hands it back only with the key', async () => {
   assert.equal((await worker.fetch(read('/samples', 'GET', null), sampleEnv(store))).status, 401);
   assert.equal((await worker.fetch(read('/samples', 'GET', 'wrong'), sampleEnv(store))).status, 401);
   const list = await (await worker.fetch(read('/samples'), sampleEnv(store))).json();
-  assert.deepEqual(list.samples.map((s) => [s.name, s.size]), [['HOFFMAN-PC/20261029-101500-t12.tar', 3]]);
+  assert.deepEqual(list.samples.map((s) => [s.name, s.size]), [['HOFFMAN-PC/20261029-101500-t12.tar', 1024]]);
   const one = await worker.fetch(read('/samples/HOFFMAN-PC/20261029-101500-t12.tar'), sampleEnv(store));
-  assert.deepEqual([...new Uint8Array(await one.arrayBuffer())], [1, 2, 3]);
+  assert.deepEqual(new Uint8Array(await one.arrayBuffer()), tarBytes());
   assert.equal((await worker.fetch(read('/samples/HOFFMAN-PC/20261029-101500-t12.tar', 'DELETE'), sampleEnv(store))).status, 204);
   assert.equal(store.m.size, 0);
 });
@@ -90,6 +96,15 @@ test('refuses samples once uploads close, with odd names, or with no key set', a
   assert.equal((await worker.fetch(put('PC/../a.tar'), sampleEnv(store))).status, 400);
   assert.equal((await worker.fetch(put('PC/a.jpg'), sampleEnv(store))).status, 400);
   assert.equal((await worker.fetch(put('PC/a.tar', new Uint8Array()), sampleEnv(store))).status, 400);
+  // Compressed, so it could unpack to far more than it weighs.
+  assert.equal((await worker.fetch(put('PC/a.tar', new Uint8Array(1024).fill(0x1f)), sampleEnv(store))).status, 400);
   assert.equal((await worker.fetch(read('/samples'), sampleEnv(store, { SAMPLES_KEY: '' }))).status, 401);
   assert.equal(store.m.size, 0);
+});
+
+test('never replaces a sample already there', async () => {
+  const store = kv();
+  assert.equal((await worker.fetch(put('PC/v1.tar', tarBytes(1)), sampleEnv(store))).status, 201);
+  assert.equal((await worker.fetch(put('PC/v1.tar', tarBytes(2)), sampleEnv(store))).status, 409);
+  assert.deepEqual(store.m.get('PC/v1.tar').v, tarBytes(1).buffer);
 });

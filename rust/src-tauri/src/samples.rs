@@ -33,6 +33,9 @@ const EVERY: Duration = Duration::from_secs(2);
 const FIRST_FRAMES: u32 = 60;
 const LATER_EVERY: Duration = Duration::from_secs(10);
 const MAX_FRAMES: u32 = 120;
+/// Frames stop here, well under the relay's 24 MB a pack, leaving room for
+/// the log and the archive.
+const MAX_FRAME_BYTES: u64 = 20 * 1024 * 1024;
 const FRAME_WIDTH: u32 = 1280;
 const FRAME_QUALITY: u8 = 80;
 /// The log from this long before the truck came on, for the readings ahead of it.
@@ -143,9 +146,14 @@ async fn record(app: &AppHandle, url: &str, folder: &Path) -> u32 {
             return 0;
         }
     };
-    let mut kept = 0u32;
+    let (mut kept, mut bytes) = (0u32, 0u64);
     let mut last = tokio::time::Instant::now() - LATER_EVERY;
     while kept < MAX_FRAMES {
+        // Unticked mid-visit: nothing more is kept.
+        if !enabled(app) {
+            log(app, "samples: switched off; no more frames for this visit");
+            break;
+        }
         let Some((jpeg, at)) = burst.next(Duration::from_secs(15)).await else {
             log(app, "samples: the camera feed stopped; no more frames for this visit");
             break;
@@ -157,8 +165,13 @@ async fn record(app: &AppHandle, url: &str, folder: &Path) -> u32 {
         let name = format!("frame-{:03}-{}.jpg", kept + 1, Local::now().format("%H%M%S%.3f"));
         let small = tokio::task::spawn_blocking(move || shrink(&jpeg, FRAME_WIDTH, FRAME_QUALITY).unwrap_or(jpeg)).await;
         if let Ok(small) = small {
-            if fs::write(folder.join(name), small).is_ok() {
+            if bytes + small.len() as u64 > MAX_FRAME_BYTES {
+                log(app, format!("samples: this visit has reached {} MB of pictures; no more are kept", MAX_FRAME_BYTES / (1024 * 1024)));
+                break;
+            }
+            if fs::write(folder.join(name), &small).is_ok() {
                 kept += 1;
+                bytes += small.len() as u64;
             }
         }
     }
@@ -248,14 +261,17 @@ pub fn tar(files: &[(String, Vec<u8>)], mtime: u64) -> Vec<u8> {
 /// Packs anything a closed or crashed app left mid-recording, then uploads
 /// whatever is waiting, for as long as the app runs.
 pub fn start_uploader(app: AppHandle) {
+    let (recording, pending) = {
+        let s = &app.state::<AppState>().samples;
+        (s.recording(), s.pending())
+    };
+    // Listed now, before the scale is read, so a visit that starts while
+    // these are packed is not taken for one of them.
+    let left: Vec<PathBuf> = fs::read_dir(&recording).into_iter().flatten().flatten().map(|e| e.path()).collect();
     tauri::async_runtime::spawn(async move {
-        let (recording, pending) = {
-            let s = &app.state::<AppState>().samples;
-            (s.recording(), s.pending())
-        };
-        for entry in fs::read_dir(&recording).into_iter().flatten().flatten() {
-            let id = entry.file_name().to_string_lossy().to_string();
-            let _ = pack(&entry.path(), &pending, &format!("{id}-unfinished"));
+        for folder in left {
+            let id = folder.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let _ = pack(&folder, &pending, &format!("{id}-unfinished"));
         }
         let client = match reqwest::Client::builder().timeout(UPLOAD_TIMEOUT).user_agent("fgr-scale-station").build() {
             Ok(c) => c,
@@ -326,7 +342,8 @@ async fn upload(app: &AppHandle, client: &reqwest::Client, file: &Path) -> Uploa
     let name = file.file_name().unwrap_or_default().to_string_lossy().to_string();
     let url = format!("{}/samples/{}/{name}", relay.trim_end_matches('/'), station());
     match client.put(&url).header("Content-Type", "application/x-tar").body(body).send().await {
-        Ok(r) if r.status().is_success() => Upload::Done(size / 1024),
+        // 409: already there, from a try whose answer was lost.
+        Ok(r) if r.status().is_success() || r.status().as_u16() == 409 => Upload::Done(size / 1024),
         Ok(r) if r.status().as_u16() == 410 || r.status().as_u16() == 503 => Upload::Closed,
         Ok(r) if r.status().as_u16() == 400 || r.status().as_u16() == 413 => Upload::Refused(r.text().await.unwrap_or_default()),
         Ok(r) => Upload::Failed(format!("the relay answered {}", r.status())),
