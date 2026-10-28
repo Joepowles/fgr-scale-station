@@ -530,8 +530,12 @@ impl Pipeline {
 
     async fn on_reweighed(&self, session: Shared, weighing: Weighing) {
         let previous = weighing.previous.unwrap_or_default();
+        let why = match weighing.held {
+            Some(ms) => format!("held {:.0} s, longer than the weight taken", ms as f64 / 1000.0),
+            None => "more of the truck".to_string(),
+        };
         self.log(format!(
-            "truck {}: {} on the scale - more of the truck; correcting {}",
+            "truck {}: {} on the scale - {why}; correcting {}",
             session.lock().unwrap().number,
             format_weight(weighing.weight, weighing.unit),
             format_weight(previous, weighing.unit)
