@@ -63,8 +63,8 @@ jobs:
               files.includes("rust/src-tauri/tauri.conf.json") ? "it sets the version itself" :
               !files.some((f) => app.test(f)) ? "it changes nothing the app is built from" : "";
             if (why) console.log(`::notice::Not released: #${pr.number} ${why}`);
-            console.log(`release=${why ? "no" : "yes"}`);
-          ' "$RUNNER_TEMP/pr.json" | tee -a "$GITHUB_OUTPUT"
+            require("fs").appendFileSync(process.env.GITHUB_OUTPUT, `release=${why ? "no" : "yes"}\n`);
+          ' "$RUNNER_TEMP/pr.json"
           echo "number=$PR" >> "$GITHUB_OUTPUT"
       - name: Version and changelog
         id: version
