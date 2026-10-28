@@ -38,6 +38,10 @@ internet does not.
   minimum, clear and stability thresholds.
 - Weighs a truck that never fully settles once its reading holds within a set
   band, and marks the entry accordingly.
+- **Back-to-back trucks.** Holds a weighed truck at its weight until it moves.
+  When the next truck pulls on before the deck reads clear, it gets an entry
+  of its own, and the plate read as it came on, instead of being folded into
+  the truck ahead. The log shows each state change and the readings around it.
 - **Shared connection.** When the app is open on several PCs, one reads the
   scale and relays it to the others, so the device server only ever sees one
   connection. Leadership moves automatically if that PC closes or goes down.

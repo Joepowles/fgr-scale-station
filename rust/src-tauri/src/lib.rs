@@ -149,9 +149,17 @@ fn start_scale(app: &AppHandle) {
             alerts_app::feed(&handle, alerts::Input::Arrived);
         }
         ScaleEvent::Weighed(w) => {
+            let follows = w.follows.map_or(String::new(), |f| {
+                format!(" - the next truck: it pulled on before the one weighed at {} had left", scale::frames::format_weight(f, w.unit))
+            });
             log(
                 &handle,
-                format!("weighed {} {}{}", w.weight, w.unit, if w.estimated { " (not settled: steady enough after the wait, so weighed anyway)" } else { "" }),
+                format!(
+                    "weighed {} {}{}{follows}",
+                    w.weight,
+                    w.unit,
+                    if w.estimated { " (not settled: steady enough after the wait, so weighed anyway)" } else { "" }
+                ),
             );
             let _ = handle.emit("scale:weighed", &w);
             alerts_app::feed(&handle, alerts::Input::Weighed { weight: w.weight, unit: w.unit.to_string() });
@@ -161,6 +169,29 @@ fn start_scale(app: &AppHandle) {
             log(&handle, format!("reweighed {} {} (was {})", w.weight, w.unit, w.previous.unwrap_or_default()));
             let _ = handle.emit("scale:weighed", &w);
             let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Reweighed(w));
+        }
+        ScaleEvent::Moving { weight, locked, unit } => {
+            log(
+                &handle,
+                format!(
+                    "the truck weighed at {} is moving: {} now; nothing more goes on its entry until the scale settles again",
+                    scale::frames::format_weight(locked, unit),
+                    scale::frames::format_weight(weight, unit)
+                ),
+            );
+            let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Moving);
+        }
+        ScaleEvent::Stopped { weight, locked, same, unit } => {
+            let (w, l) = (scale::frames::format_weight(weight, unit), scale::frames::format_weight(locked, unit));
+            log(
+                &handle,
+                if same {
+                    format!("settled again at {w}, back at the {l} it was weighed at: the same truck")
+                } else {
+                    format!("settled at {w}, lighter than the {l} weighed and nothing came on since: part of the truck still on as it pulls off")
+                },
+            );
+            let _ = handle.state::<AppState>().pipeline.send(pipeline::Event::Stopped { weight, same });
         }
         ScaleEvent::Note(message) => log(&handle, message),
         ScaleEvent::Cleared { .. } => {

@@ -213,6 +213,9 @@ pub enum TriggerEvent {
         at: i64,
         /// Weighed without settling (see WeighingTrigger).
         estimated: bool,
+        /// Came on before the truck ahead (weighed at this) had left: the
+        /// deck never read clear between them.
+        follows: Option<f64>,
     },
     Reweighed {
         weight: f64,
@@ -225,6 +228,55 @@ pub enum TriggerEvent {
         weight: f64,
         at: i64,
     },
+    /// The weighed truck's weight has left its band: it is moving, or
+    /// something is coming on or going off. Until the deck settles again
+    /// nothing more is put down to the truck already weighed.
+    Moving {
+        weight: f64,
+        locked: f64,
+        at: i64,
+    },
+    /// Settled again after moving, without it being a new weighing: back at
+    /// the weight it was weighed at (`same`: the truck shuffled), or lighter
+    /// with nothing having come on since (part of it is still on the deck as
+    /// it pulls off).
+    Stopped {
+        weight: f64,
+        locked: f64,
+        same: bool,
+        at: i64,
+    },
+}
+
+/// What a settle after moving amounts to (see WeighingTrigger).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterMoving {
+    /// Back at the weight it was weighed at.
+    SameTruck,
+    /// Heavier, and it never went lighter: more of the same truck came on.
+    MoreOfIt,
+    /// It went lighter (the truck before leaving), then heavier again
+    /// (another coming on), and settled at a weight of its own.
+    NextTruck,
+    /// Only ever lighter: the truck is pulling off and part of it is still
+    /// on the deck.
+    PartlyOff,
+}
+
+/// `locked`: the weight taken; `low`: the lightest reading since it began
+/// to move; `weight`: where it has settled now. `band`: how far a weight may
+/// be from another and be the same; `swap`: how far it must drop, and rise
+/// again, for one truck to have gone and another come.
+pub fn after_moving(locked: f64, low: f64, weight: f64, band: f64, swap: f64) -> AfterMoving {
+    if (weight - locked).abs() <= band {
+        AfterMoving::SameTruck
+    } else if low >= locked - band && weight > locked {
+        AfterMoving::MoreOfIt
+    } else if low < locked - swap && weight - low > swap {
+        AfterMoving::NextTruck
+    } else {
+        AfterMoving::PartlyOff
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -243,6 +295,46 @@ struct Sample {
     weight: f64,
     motion: bool,
 }
+
+/// The weighed truck has moved; see WeighingTrigger.
+#[derive(Debug, Clone, Copy)]
+struct Motion {
+    since: i64,
+    /// The lightest reading since it began.
+    low: f64,
+    /// Where it last stopped partly off, so that is said once.
+    stopped: Option<f64>,
+}
+
+/// Where the trigger is, for the status and the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Phase {
+    /// Nothing over the minimum weight on the deck.
+    Empty,
+    /// Something is coming on and has not settled yet.
+    Arriving,
+    /// Weighed, and holding its weight.
+    Weighed,
+    /// Weighed, and its weight has moved since.
+    Moving,
+}
+
+impl Phase {
+    pub fn name(self) -> &'static str {
+        match self {
+            Phase::Empty => "empty",
+            Phase::Arriving => "arriving",
+            Phase::Weighed => "weighed",
+            Phase::Moving => "moving",
+        }
+    }
+}
+
+/// How long the trace of recent readings goes back, and how far apart its
+/// readings are: enough to see in a bug report what the deck did.
+const TRACE_MS: i64 = 60_000;
+const TRACE_EVERY_MS: i64 = 500;
 
 /// When does a stream of readings amount to "a vehicle is on the deck"?
 ///
@@ -275,6 +367,27 @@ struct Sample {
 /// is loaded, a weight that settles again more than the tolerance above the
 /// one already taken is raised as a correction (`Reweighed`): the same truck,
 /// with more of it on the scale. That can happen more than once.
+///
+/// Customers in a hurry pull on while the truck ahead is still on the deck
+/// (Hoffman, 2026-10-28), so the deck never reads clear between them. The
+/// truck weighed is held at its weight ("locked") while it stays inside
+/// `unsettled_tolerance` of it. Once the reading leaves that band, for
+/// `CLEAR_READINGS` readings over `CLEAR_MS` (one stray frame is not
+/// movement), the truck is moving (`Moving`), and the lightest reading from
+/// then on is kept. When the deck settles again, `after_moving` decides:
+///
+/// - back within the band of the weight taken: the same truck, shuffled
+///   (`Stopped`, same);
+/// - heavier and never lighter than it: more of the same truck (`Reweighed`);
+/// - lighter by more than the clear weight at some point, and heavier again
+///   since by more than the clear weight: the truck ahead has gone and the
+///   next one is on: weighed afresh (`Weighed`, `follows` the one before);
+/// - only ever lighter: the truck pulling off, part of it still on
+///   (`Stopped`, not same), still moving: if it then gets heavier again,
+///   that is the next truck.
+///
+/// A next truck that never settles is weighed anyway on the same terms as
+/// one on an empty deck, its seconds counted from when the moving began.
 #[derive(Debug, Clone)]
 pub struct WeighingTrigger {
     min_weight: f64,
@@ -290,6 +403,13 @@ pub struct WeighingTrigger {
     unsettled_tolerance: f64,
     /// The readings in a row at or under the clear weight, and when they began.
     clear_run: Option<(u32, i64)>,
+    /// The readings in a row outside the weighed truck's band.
+    off_band: Option<(u32, i64)>,
+    motion: Option<Motion>,
+    /// A swap of trucks is a drop, then a rise, of more than this.
+    swap_weight: f64,
+    /// Recent readings, TRACE_EVERY_MS apart, for the log.
+    trace: VecDeque<Sample>,
     pub settled: bool,
     pub last_weighing: Option<LastWeighing>,
 }
@@ -309,9 +429,36 @@ impl WeighingTrigger {
             unsettled_ms: (s.unsettled_seconds.max(0.0) * 1000.0) as i64,
             unsettled_tolerance: s.unsettled_tolerance.max(s.stable_tolerance.max(0.0)),
             clear_run: None,
+            off_band: None,
+            motion: None,
+            swap_weight: s.clear_weight.min(s.min_weight).max(s.unsettled_tolerance.max(s.stable_tolerance.max(0.0))),
+            trace: VecDeque::new(),
             settled: false,
             last_weighing: None,
         }
+    }
+
+    pub fn phase(&self) -> Phase {
+        match (self.armed, self.arrived, self.motion.is_some()) {
+            (false, _, true) => Phase::Moving,
+            (false, _, false) => Phase::Weighed,
+            (true, true, _) => Phase::Arriving,
+            (true, false, _) => Phase::Empty,
+        }
+    }
+
+    /// The readings over the last `seconds`, one every half second, oldest
+    /// first: "32000 31980 18040m ..." (m: the motion flag was on).
+    pub fn trace(&self, now: i64, seconds: i64) -> String {
+        let since = now - seconds * 1000;
+        let mut out = String::new();
+        for s in self.trace.iter().filter(|s| s.at >= since) {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(&format!("{}{}", s.weight.round(), if s.motion { "m" } else { "" }));
+        }
+        out
     }
 
     /// The settling window now: lowest and highest weight in it, whether
@@ -327,7 +474,15 @@ impl WeighingTrigger {
         if !reading.valid {
             return None;
         }
-        self.window.push_back(Sample { at, weight: reading.weight, motion: reading.motion });
+        let sample = Sample { at, weight: reading.weight, motion: reading.motion };
+        match self.trace.back_mut() {
+            Some(last) if at - last.at < TRACE_EVERY_MS => last.motion |= reading.motion,
+            _ => self.trace.push_back(sample),
+        }
+        while self.trace.front().is_some_and(|s| s.at < at - TRACE_MS) {
+            self.trace.pop_front();
+        }
+        self.window.push_back(sample);
         let since = at - self.stable_ms;
         while self.window.front().is_some_and(|s| s.at < since) {
             self.window.pop_front();
@@ -348,23 +503,78 @@ impl WeighingTrigger {
                 self.armed = true;
                 self.arrived = false;
                 self.arrived_at = None;
+                self.motion = None;
+                self.off_band = None;
                 return Some(TriggerEvent::Cleared { weight, at });
             }
-            if let Some(last) = self.last_weighing {
+            let last = self.last_weighing?;
+            let Some(mut motion) = self.motion else {
                 // Heavier: more of the truck. Any settle at all after an
                 // estimate: the real weight.
                 if settled && (weight > last.weight + self.tolerance || last.estimated) {
+                    self.off_band = None;
                     self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at, estimated: false });
                     return Some(TriggerEvent::Reweighed { weight, previous: last.weight, unit: reading.unit, gross: reading.gross, at });
                 }
+                // Out of its band for long enough: on the move.
+                self.off_band = if (weight - last.weight).abs() > self.unsettled_tolerance {
+                    Some(self.off_band.map_or((1, at), |(n, since)| (n + 1, since)))
+                } else {
+                    None
+                };
+                if self.off_band.is_some_and(|(n, since)| n >= CLEAR_READINGS && at - since >= CLEAR_MS) {
+                    let since = self.off_band.take().map_or(at, |(_, since)| since);
+                    self.motion = Some(Motion { since, low: weight, stopped: None });
+                    return Some(TriggerEvent::Moving { weight, locked: last.weight, at });
+                }
+                return None;
+            };
+            motion.low = motion.low.min(weight);
+            self.motion = Some(motion);
+            if weight < self.min_weight {
+                return None;
             }
-            return None;
+            let (band, swap) = (self.unsettled_tolerance, self.swap_weight);
+            let mut verdict = settled.then(|| (after_moving(last.weight, motion.low, weight, band, swap), weight, false));
+            // The next truck, never settling: weighed anyway, as on an empty deck.
+            let waited = self.unsettled_ms > 0 && at - motion.since >= self.unsettled_ms;
+            if verdict.is_none() && waited && spans_window && (max - min) <= self.unsettled_tolerance {
+                let middle = self.middle();
+                if after_moving(last.weight, motion.low, middle, band, swap) == AfterMoving::NextTruck {
+                    verdict = Some((AfterMoving::NextTruck, middle, true));
+                }
+            }
+            let (kind, weight, estimated) = verdict?;
+            let locked = last.weight;
+            return match kind {
+                AfterMoving::SameTruck => {
+                    self.motion = None;
+                    Some(TriggerEvent::Stopped { weight, locked, same: true, at })
+                }
+                AfterMoving::MoreOfIt => {
+                    self.motion = None;
+                    self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at, estimated: false });
+                    Some(TriggerEvent::Reweighed { weight, previous: locked, unit: reading.unit, gross: reading.gross, at })
+                }
+                AfterMoving::NextTruck => {
+                    self.motion = None;
+                    self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at, estimated });
+                    Some(TriggerEvent::Weighed { weight, unit: reading.unit, gross: reading.gross, at, estimated, follows: Some(locked) })
+                }
+                AfterMoving::PartlyOff => {
+                    if motion.stopped.is_some_and(|w| (w - weight).abs() <= band) {
+                        return None; // said already
+                    }
+                    self.motion = Some(Motion { stopped: Some(weight), ..motion });
+                    Some(TriggerEvent::Stopped { weight, locked, same: false, at })
+                }
+            };
         }
         if settled && weight >= self.min_weight {
             self.armed = false;
             self.arrived = true;
             self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at, estimated: false });
-            return Some(TriggerEvent::Weighed { weight, unit: reading.unit, gross: reading.gross, at, estimated: false });
+            return Some(TriggerEvent::Weighed { weight, unit: reading.unit, gross: reading.gross, at, estimated: false, follows: None });
         }
         if !self.arrived && weight >= self.min_weight {
             self.arrived = true;
@@ -374,12 +584,10 @@ impl WeighingTrigger {
         // On the deck long enough without settling: weighed anyway if steady enough.
         let waited = self.arrived_at.is_some_and(|since| self.unsettled_ms > 0 && at - since >= self.unsettled_ms);
         if waited && spans_window && weight >= self.min_weight && (max - min) <= self.unsettled_tolerance {
-            let mut weights: Vec<f64> = self.window.iter().map(|s| s.weight).collect();
-            weights.sort_by(f64::total_cmp);
-            let middle = weights[weights.len() / 2];
+            let middle = self.middle();
             self.armed = false;
             self.last_weighing = Some(LastWeighing { weight: middle, unit: reading.unit, at, estimated: true });
-            return Some(TriggerEvent::Weighed { weight: middle, unit: reading.unit, gross: reading.gross, at, estimated: true });
+            return Some(TriggerEvent::Weighed { weight: middle, unit: reading.unit, gross: reading.gross, at, estimated: true, follows: None });
         }
         // A truck that came on and backed off again without settling.
         if self.arrived && deck_clear {
@@ -388,6 +596,13 @@ impl WeighingTrigger {
             return Some(TriggerEvent::Cleared { weight, at });
         }
         None
+    }
+
+    /// The middle reading of the settling window.
+    fn middle(&self) -> f64 {
+        let mut weights: Vec<f64> = self.window.iter().map(|s| s.weight).collect();
+        weights.sort_by(f64::total_cmp);
+        weights.get(weights.len() / 2).copied().unwrap_or_default()
     }
 }
 
@@ -510,9 +725,10 @@ mod tests {
                 self.feed(weight(i), motion);
             }
         }
-        /// The events, less Arrived (see every_event).
+        /// The events that weigh or clear: less Arrived, and less Moving
+        /// and Stopped, which only say what the truck is doing (see every_event).
         fn kinds(&self) -> Vec<&'static str> {
-            self.every_event().into_iter().filter(|k| *k != "arrived").collect()
+            self.every_event().into_iter().filter(|k| !matches!(*k, "arrived" | "moving" | "stopped" | "stopped same")).collect()
         }
         fn every_event(&self) -> Vec<&'static str> {
             self.events
@@ -522,18 +738,30 @@ mod tests {
                     TriggerEvent::Weighed { .. } => "weighed",
                     TriggerEvent::Reweighed { .. } => "reweighed",
                     TriggerEvent::Cleared { .. } => "cleared",
+                    TriggerEvent::Moving { .. } => "moving",
+                    TriggerEvent::Stopped { same: true, .. } => "stopped same",
+                    TriggerEvent::Stopped { same: false, .. } => "stopped",
                 })
                 .collect()
         }
+        /// The events kinds() lists.
+        fn weighings(&self) -> Vec<&TriggerEvent> {
+            self.events.iter().filter(|e| matches!(e, TriggerEvent::Weighed { .. } | TriggerEvent::Reweighed { .. } | TriggerEvent::Cleared { .. })).collect()
+        }
         fn weight_of(&self, i: usize) -> f64 {
-            let events: Vec<&TriggerEvent> = self.events.iter().filter(|e| !matches!(e, TriggerEvent::Arrived { .. })).collect();
-            match *events[i] {
-                TriggerEvent::Arrived { .. } => unreachable!(),
+            match *self.weighings()[i] {
                 TriggerEvent::Weighed { weight, .. } | TriggerEvent::Reweighed { weight, .. } | TriggerEvent::Cleared { weight, .. } => weight,
+                _ => unreachable!(),
+            }
+        }
+        fn follows_of(&self, i: usize) -> Option<f64> {
+            match *self.weighings()[i] {
+                TriggerEvent::Weighed { follows, .. } => follows,
+                _ => panic!("event {i} is not a weighing"),
             }
         }
         fn previous_of(&self, i: usize) -> f64 {
-            let events: Vec<&TriggerEvent> = self.events.iter().filter(|e| !matches!(e, TriggerEvent::Arrived { .. })).collect();
+            let events = self.weighings();
             match *events[i] {
                 TriggerEvent::Reweighed { previous, .. } => previous,
                 _ => panic!("event {i} is not a reweigh"),
@@ -734,6 +962,159 @@ mod tests {
         assert!(!t.trigger.armed);
         t.feed_n(45, |_| 0.0, false); // the truck really leaves
         assert_eq!(t.kinds(), ["weighed", "cleared"]);
+    }
+
+    #[test]
+    fn hoffman_a_truck_pulling_on_behind_one_still_on_the_scale_is_weighed_on_its_own() {
+        // 2026-10-28: the truck ahead (no plate) was weighed; the next pulled
+        // on before the scale went back to zero.
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        t.feed_n(40, |_| 0.0, false);
+        t.feed_n(10, |i| 5_000.0 + i as f64 * 2_500.0, true);
+        t.feed_n(60, |_| 32_000.0, false);
+        assert_eq!(t.kinds(), ["weighed"]);
+        assert_eq!(t.trigger.phase(), Phase::Weighed);
+        t.feed_n(10, |i| 32_000.0 + i as f64 * 1_200.0, true); // the next one's front wheels come on
+        assert_eq!(t.trigger.phase(), Phase::Moving);
+        t.feed_n(20, |i| 44_000.0 - i as f64 * 1_600.0, true); // the one ahead drives off
+        t.feed_n(10, |i| 12_000.0 + i as f64 * 1_550.0, true); // the next rolls the rest of the way on
+        t.feed_n(60, |_| 27_500.0, false);
+        assert_eq!(t.kinds(), ["weighed", "weighed"]);
+        assert_eq!(t.weight_of(1), 27_500.0);
+        assert_eq!(t.follows_of(0), None);
+        assert_eq!(t.follows_of(1), Some(32_000.0));
+        assert_eq!(t.trigger.phase(), Phase::Weighed);
+        t.feed_n(45, |_| 0.0, false);
+        assert_eq!(t.kinds(), ["weighed", "weighed", "cleared"]);
+        assert_eq!(t.trigger.phase(), Phase::Empty);
+    }
+
+    #[test]
+    fn a_heavier_truck_behind_is_weighed_on_its_own_not_taken_for_more_of_the_one_ahead() {
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        t.feed_n(40, |_| 0.0, false);
+        t.feed_n(60, |_| 30_000.0, false);
+        t.feed_n(20, |i| 30_000.0 - i as f64 * 600.0, true); // driving off...
+        t.feed_n(20, |i| 18_000.0 + i as f64 * 1_700.0, true); // ...as the next comes on
+        t.feed_n(60, |_| 52_000.0, false);
+        assert_eq!(t.kinds(), ["weighed", "weighed"]);
+        assert_eq!((t.weight_of(1), t.follows_of(1)), (52_000.0, Some(30_000.0)));
+    }
+
+    #[test]
+    fn a_lighter_truck_nose_to_tail_without_the_deck_clearing_is_weighed() {
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        t.feed_n(40, |_| 0.0, false);
+        t.feed_n(60, |_| 41_980.0, false);
+        t.feed_n(10, |_| 15_000.0, true); // driving off, never under the clear weight
+        t.feed_n(10, |_| 25_000.0, true);
+        t.feed_n(60, |_| 35_580.0, false);
+        assert_eq!(t.kinds(), ["weighed", "weighed"]);
+        assert_eq!((t.weight_of(1), t.follows_of(1)), (35_580.0, Some(41_980.0)));
+    }
+
+    #[test]
+    fn a_truck_that_shuffles_and_settles_back_at_its_weight_is_the_same_truck() {
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        t.feed_n(40, |_| 0.0, false);
+        t.feed_n(60, |_| 40_000.0, false);
+        t.feed_n(20, |_| 28_000.0, true); // the front axle off the end for a second
+        assert_eq!(t.trigger.phase(), Phase::Moving);
+        t.feed_n(60, |i| 40_000.0 + (i % 2) as f64 * 10.0, false); // and back on
+        assert_eq!(t.every_event(), ["arrived", "weighed", "moving", "stopped same"]);
+        assert_eq!(t.trigger.phase(), Phase::Weighed);
+        t.feed_n(45, |_| 0.0, false);
+        assert_eq!(t.kinds(), ["weighed", "cleared"]);
+    }
+
+    #[test]
+    fn a_truck_stopping_part_way_off_is_not_a_new_truck() {
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        t.feed_n(40, |_| 0.0, false);
+        t.feed_n(60, |_| 48_000.0, false);
+        t.feed_n(20, |i| 48_000.0 - i as f64 * 1_400.0, true);
+        t.feed_n(200, |_| 20_000.0, false); // the trailer's axles still on, waiting at the gate
+        assert_eq!(t.every_event(), ["arrived", "weighed", "moving", "stopped"]); // said once
+        t.feed_n(45, |_| 0.0, false);
+        assert_eq!(t.kinds(), ["weighed", "cleared"]);
+    }
+
+    #[test]
+    fn the_next_truck_coming_on_after_one_stopped_part_way_off_is_weighed() {
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        t.feed_n(40, |_| 0.0, false);
+        t.feed_n(60, |_| 48_000.0, false);
+        t.feed_n(10, |_| 30_000.0, true);
+        t.feed_n(60, |_| 20_000.0, false); // part way off
+        t.feed_n(10, |_| 9_000.0, true); // gone, and the next coming on
+        t.feed_n(10, |_| 22_000.0, true);
+        t.feed_n(60, |_| 33_000.0, false);
+        assert_eq!(t.every_event(), ["arrived", "weighed", "moving", "stopped", "weighed"]);
+        assert_eq!((t.weight_of(1), t.follows_of(1)), (33_000.0, Some(48_000.0)));
+    }
+
+    #[test]
+    fn the_next_trucks_front_waiting_on_the_deck_is_corrected_once_it_is_on_alone() {
+        // The scale alone takes a front on the deck for more of the truck
+        // ahead (the pipeline asks the camera); once the one ahead has gone,
+        // the next is weighed on its own all the same.
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        t.feed_n(40, |_| 0.0, false);
+        t.feed_n(60, |_| 32_000.0, false);
+        t.feed_n(10, |_| 38_000.0, true);
+        t.feed_n(60, |_| 44_000.0, false);
+        assert_eq!(t.kinds(), ["weighed", "reweighed"]);
+        t.feed_n(20, |i| 44_000.0 - i as f64 * 1_600.0, true);
+        t.feed_n(60, |_| 27_500.0, false);
+        assert_eq!(t.kinds(), ["weighed", "reweighed", "weighed"]);
+        assert_eq!((t.weight_of(2), t.follows_of(2)), (27_500.0, Some(44_000.0)));
+    }
+
+    #[test]
+    fn a_next_truck_that_never_settles_is_weighed_anyway() {
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        t.trigger.unsettled_ms = 20_000;
+        t.feed_n(40, |_| 0.0, false);
+        t.feed_n(60, |_| 30_000.0, false);
+        t.feed_n(10, |_| 10_000.0, true);
+        t.feed_n(300, |i| 25_000.0 + (i % 5) as f64 * 30.0, true); // 15 s: not yet
+        assert_eq!(t.kinds(), ["weighed"]);
+        t.feed_n(200, |i| 25_000.0 + (i % 5) as f64 * 30.0, true);
+        assert_eq!(t.kinds(), ["weighed", "weighed"]);
+        assert!(matches!(t.weighings()[1], TriggerEvent::Weighed { estimated: true, follows: Some(30_000.0), .. }));
+    }
+
+    #[test]
+    fn a_weighed_truck_rocking_inside_its_band_is_not_moving() {
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        t.feed_n(40, |_| 0.0, false);
+        t.feed_n(60, |_| 30_000.0, false);
+        t.feed_n(400, |i| 30_000.0 + (i % 9) as f64 * 20.0 - 80.0, true); // an idling engine, 160 lb
+        t.feed(5_000.0, false); // and a corrupted frame
+        t.feed_n(40, |_| 30_000.0, false);
+        assert_eq!(t.every_event(), ["arrived", "weighed"]);
+    }
+
+    #[test]
+    fn decides_what_a_settle_after_moving_is() {
+        let after = |low, weight| after_moving(30_000.0, low, weight, 200.0, 1_000.0);
+        assert_eq!(after(18_000.0, 30_150.0), AfterMoving::SameTruck);
+        assert_eq!(after(29_900.0, 45_000.0), AfterMoving::MoreOfIt);
+        assert_eq!(after(12_000.0, 45_000.0), AfterMoving::NextTruck);
+        assert_eq!(after(12_000.0, 25_000.0), AfterMoving::NextTruck);
+        assert_eq!(after(20_000.0, 20_000.0), AfterMoving::PartlyOff);
+        assert_eq!(after(20_000.0, 20_600.0), AfterMoving::PartlyOff); // a wobble back up is not a truck
+    }
+
+    #[test]
+    fn keeps_a_trace_of_the_readings_for_the_log() {
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        t.feed_n(20, |_| 0.0, false); // 1 s: two in the trace
+        t.feed_n(20, |_| 30_000.0, true);
+        assert_eq!(t.trigger.trace(t.now, 30), "0 0 30000m 30000m");
+        t.feed_n(1_400, |_| 30_000.0, false); // 70 s later, 60 s are kept
+        assert!((120..=121).contains(&t.trigger.trace(t.now, 120).split(' ').count()));
+        assert!((60..=61).contains(&t.trigger.trace(t.now, 30).split(' ').count()));
     }
 
     #[test]
