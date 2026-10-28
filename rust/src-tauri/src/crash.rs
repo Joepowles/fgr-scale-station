@@ -12,8 +12,11 @@
 //!   back does not restart for ever);
 //! - a panic anywhere is written down and reported;
 //! - a run that ended without closing (killed in Task Manager after a
-//!   freeze, a crash, the power) is reported on the next start, from the
-//!   marker it leaves behind.
+//!   freeze, a crash) is reported on the next start, from the marker it
+//!   leaves behind. A run the PC took down with it (shut down or restarted
+//!   by Windows with the app open, or the power lost) is only written in
+//!   the log: the PC started again after the run was last heard from, so it
+//!   was nothing the app did (issues #18-#22).
 //!
 //! Reports go the way the Bug report tab sends them, labelled as problems,
 //! titled "Crash:" or "Froze:", unless "Send crash reports" is off.
@@ -37,6 +40,8 @@ const CHECK_EVERY: Duration = Duration::from_secs(5);
 /// Not answering for this long is a freeze.
 const FROZEN_AFTER_MS: i64 = 20_000;
 const MAX_RESTARTS_PER_HOUR: usize = 3;
+/// How often the marker says the run is still going.
+const ALIVE_EVERY_MS: i64 = 30_000;
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static REPORTED_PANIC: AtomicBool = AtomicBool::new(false);
@@ -75,6 +80,46 @@ struct Marker {
     started_at: i64,
     /// Restarted by the watchdog: not an unexpected end.
     restarting: bool,
+    /// When the run last said it was still going (0 from before 0.2.8).
+    #[serde(default)]
+    alive_at: i64,
+}
+
+/// A run last heard from at `last_heard` went down with the PC if the PC
+/// has started since.
+fn pc_restarted_since(last_heard: i64, booted_at: Option<i64>) -> bool {
+    booted_at.is_some_and(|boot| boot > last_heard)
+}
+
+/// When the PC started, from how long it has been up.
+fn booted_at() -> Option<i64> {
+    uptime_ms().map(|up| now_ms() - up)
+}
+
+#[cfg(windows)]
+fn uptime_ms() -> Option<i64> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetTickCount64() -> u64;
+    }
+    // Counts time asleep too, so a PC that slept is not taken for restarted.
+    Some(unsafe { GetTickCount64() } as i64)
+}
+
+#[cfg(target_os = "linux")]
+fn uptime_ms() -> Option<i64> {
+    let text = std::fs::read_to_string("/proc/uptime").ok()?;
+    let seconds: f64 = text.split_whitespace().next()?.parse().ok()?;
+    Some((seconds * 1000.0) as i64)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn uptime_ms() -> Option<i64> {
+    None
+}
+
+fn local_time(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms).map(|d| d.with_timezone(&chrono::Local).format("%b %-d, %-I:%M %p").to_string()).unwrap_or_default()
 }
 
 /// At start: report a previous run that ended without closing, leave this
@@ -83,25 +128,32 @@ pub fn start(app: &AppHandle, dir: &Path) {
     let _ = APP.set(app.clone());
     let marker = dir.join(MARKER);
     if let Some(previous) = std::fs::read_to_string(&marker).ok().and_then(|t| serde_json::from_str::<Marker>(&t).ok()) {
-        if !previous.restarting {
-            let started = chrono::DateTime::from_timestamp_millis(previous.started_at)
-                .map(|d| d.with_timezone(&chrono::Local).format("%b %-d, %-I:%M %p").to_string())
-                .unwrap_or_default();
-            let what = format!("version {} started {started} ended without closing", previous.version);
+        let last_heard = previous.alive_at.max(previous.started_at);
+        let started = local_time(previous.started_at);
+        let heard = local_time(last_heard);
+        if previous.restarting {
+            // The watchdog's own restart: reported when it froze.
+        } else if pc_restarted_since(last_heard, booted_at()) {
+            log(
+                app,
+                format!("the last run (version {} started {started}, last heard from {heard}) ended with the PC: it was shut down, restarted or lost power with the app open. Not reported.", previous.version),
+            );
+        } else {
+            let what = format!("version {} started {started}, last heard from {heard}, ended without closing", previous.version);
             log(app, format!("crash: the last run ({what})"));
             send_report(
                 app,
                 "Crash",
-                &format!("the last run ended without closing ({started})"),
+                &format!("the last run ended without closing ({heard})"),
                 &format!(
-                    "The app's last run ({what}): it crashed, was ended in Task Manager, or the PC lost power or restarted. Its log is below; look before {started} onwards for what it was doing last."
+                    "The app's last run ({what}): it crashed or was ended in Task Manager; the PC did not restart. Its log is below; look around {heard} for what it was doing last."
                 ),
             );
         }
     }
-    let now = Marker { version: app.package_info().version.to_string(), started_at: now_ms(), restarting: false };
+    let now = Marker { version: app.package_info().version.to_string(), started_at: now_ms(), restarting: false, alive_at: now_ms() };
     let _ = std::fs::write(&marker, serde_json::to_string(&now).unwrap_or_default());
-    watch(app.clone(), dir.to_path_buf());
+    watch(app.clone(), dir.to_path_buf(), now);
     #[cfg(debug_assertions)]
     test_freeze(app);
 }
@@ -141,7 +193,7 @@ struct Pings {
     runtime: AtomicI64,
 }
 
-fn watch(app: AppHandle, dir: PathBuf) {
+fn watch(app: AppHandle, dir: PathBuf, mut marker: Marker) {
     let pings = Arc::new(Pings { main: AtomicI64::new(now_ms()), runtime: AtomicI64::new(now_ms()) });
     std::thread::Builder::new()
         .name("watchdog".into())
@@ -160,6 +212,10 @@ fn watch(app: AppHandle, dir: PathBuf) {
                     scale_stuck_since = None;
                 }
                 last_round = now;
+                if now - marker.alive_at >= ALIVE_EVERY_MS {
+                    marker.alive_at = now;
+                    let _ = std::fs::write(dir.join(MARKER), serde_json::to_string(&marker).unwrap_or_default());
+                }
                 let p = pings.clone();
                 let _ = app.run_on_main_thread(move || p.main.store(now_ms(), Ordering::SeqCst));
                 let p = pings.clone();
@@ -238,7 +294,7 @@ fn may_restart(dir: &Path) -> bool {
 
 fn restart_now(app: &AppHandle, dir: &Path) {
     log(app, "watchdog: restarting the app");
-    let marker = Marker { version: app.package_info().version.to_string(), started_at: now_ms(), restarting: true };
+    let marker = Marker { version: app.package_info().version.to_string(), started_at: now_ms(), restarting: true, alive_at: now_ms() };
     let _ = std::fs::write(dir.join(MARKER), serde_json::to_string(&marker).unwrap_or_default());
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::process::Command::new(exe).arg(AFTER_RESTART).spawn();
@@ -311,5 +367,30 @@ mod tests {
         // Older than an hour do not count.
         assert!(allowed_with(&dir, &[now - 4_000_000, now - 5_000_000, now - 6_000_000]));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_run_the_pc_took_down_is_not_a_crash() {
+        let heard = 1_000_000;
+        // Restarted or powered off and on since: not the app.
+        assert!(pc_restarted_since(heard, Some(heard + 60_000)));
+        // The PC has been up all along: the app went down by itself.
+        assert!(!pc_restarted_since(heard, Some(heard - 3_600_000)));
+        // Uptime unknown: report it, as before.
+        assert!(!pc_restarted_since(heard, None));
+    }
+
+    #[test]
+    fn reads_a_marker_from_before_alive_at() {
+        let old: Marker = serde_json::from_str(r#"{"version":"0.2.7","started_at":5,"restarting":false}"#).unwrap();
+        assert_eq!((old.started_at, old.alive_at), (5, 0));
+    }
+
+    #[test]
+    fn knows_how_long_the_pc_has_been_up() {
+        if cfg!(any(windows, target_os = "linux")) {
+            let boot = booted_at().unwrap();
+            assert!(boot > 0 && boot <= now_ms());
+        }
     }
 }
