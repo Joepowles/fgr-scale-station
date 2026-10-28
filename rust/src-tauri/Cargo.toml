@@ -1,6 +1,6 @@
 [package]
 name = "falcon-scale-station"
-version = "0.2.8"
+version = "0.2.9"
 description = "Falcon Scale Station, with the main process in Rust"
 authors = ["Falcon Green Resources"]
 edition = "2021"
