@@ -12,6 +12,7 @@ mod camera;
 mod crash;
 mod electron_import;
 mod history;
+mod pairing;
 mod pipeline;
 mod plate_choice;
 mod plates;

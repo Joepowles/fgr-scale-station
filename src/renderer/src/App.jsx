@@ -107,6 +107,8 @@ export default function App() {
               <div className={weightState === 'settled' ? 'text-emerald-400' : weightState === 'scale offline' ? 'text-red-400' : ''}>{weightState || 'waiting'}</div>
               {scale?.loaded && scale.lastWeighing?.plate?.text && <div className="mono text-2xl font-bold text-white mt-1">{scale.lastWeighing.plate.text}</div>}
               {scale?.lastWeighing && <div className="mt-1">Last weighing {fmtWeight(scale.lastWeighing.weight, scale.lastWeighing.unit)}</div>}
+              {/* The last weighing written paired with an earlier one of the same truck. */}
+              {lastEntry?.pair && <div className="mt-1">Gross {fmtWeight(lastEntry.pair.gross, lastEntry.unit)} · Tare {fmtWeight(lastEntry.pair.tare, lastEntry.unit)} · <span className="text-emerald-400 font-bold">Net {fmtWeight(lastEntry.pair.net, lastEntry.unit)}</span></div>}
             </div>
           </div>
         )}

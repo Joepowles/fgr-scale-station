@@ -622,9 +622,20 @@ impl Pipeline {
         };
         match result {
             Ok(Some(entry)) => {
-                let mut s = session.lock().unwrap();
-                s.entry_id = entry.get("id").and_then(Value::as_str).map(String::from);
-                s.written = now.clone();
+                let (number, id) = {
+                    let mut s = session.lock().unwrap();
+                    s.entry_id = entry.get("id").and_then(Value::as_str).map(String::from);
+                    s.written = now.clone();
+                    (s.number, s.entry_id.clone().unwrap_or_default())
+                };
+                // A new plate or weight can make a pair with an earlier weighing, or undo one.
+                if entry_id.is_none() || now.plate != written.plate || now.weight != written.weight {
+                    match crate::pairing::update(history, &id) {
+                        Ok(Some(line)) => self.log(format!("truck {number}: {line}")),
+                        Ok(None) => {}
+                        Err(err) => self.log(format!("could not pair the weighing: {err}")),
+                    }
+                }
             }
             Ok(None) => {}
             Err(err) => self.log(format!("could not write the history: {err}")),
