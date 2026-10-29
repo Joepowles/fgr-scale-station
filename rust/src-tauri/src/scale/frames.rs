@@ -176,6 +176,10 @@ pub struct TriggerSettings {
     pub unsettled_seconds: f64,
     #[serde(deserialize_with = "lenient_number")]
     pub unsettled_tolerance: f64,
+    /// A weighed truck's reading moving by no more than this is people
+    /// getting out or onto the scale, never the truck: its weight stays.
+    #[serde(deserialize_with = "lenient_number")]
+    pub ignore_weight: f64,
 }
 
 /// A settings number the way the Electron side read it, `Number(x) || 0`:
@@ -193,7 +197,15 @@ pub fn lenient_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::
 
 impl Default for TriggerSettings {
     fn default() -> Self {
-        Self { min_weight: 5000.0, clear_weight: 1000.0, stable_seconds: 2.0, stable_tolerance: 40.0, unsettled_seconds: 20.0, unsettled_tolerance: 200.0 }
+        Self {
+            min_weight: 5000.0,
+            clear_weight: 1000.0,
+            stable_seconds: 2.0,
+            stable_tolerance: 40.0,
+            unsettled_seconds: 20.0,
+            unsettled_tolerance: 200.0,
+            ignore_weight: 500.0,
+        }
     }
 }
 
@@ -227,9 +239,10 @@ pub enum TriggerEvent {
         /// taken that has now held, settled, longer than it did (ms).
         held: Option<i64>,
     },
-    /// Settled lighter than the weight taken, but inside its band: the
-    /// driver getting out, say. The weight taken is kept, and no longer
-    /// changes for a weight held longer.
+    /// Settled lighter or heavier than the weight taken, but by no more
+    /// than the ignore weight: the driver getting out, or someone stepping
+    /// on to talk to him. The weight taken is kept, and no longer changes
+    /// for a weight held longer.
     Kept {
         weight: f64,
         locked: f64,
@@ -264,29 +277,30 @@ pub enum TriggerEvent {
 pub enum AfterMoving {
     /// Back at the weight it was weighed at.
     SameTruck,
-    /// Heavier, and it never went lighter: more of the same truck came on.
+    /// Heavier, and nothing has gone off: more of the same truck came on,
+    /// or the next truck's front. Which one is decided once the heavier
+    /// weight has held as long as the weight taken did (see WeighingTrigger).
     MoreOfIt,
-    /// It went lighter (the truck before leaving), then heavier again
-    /// (another coming on), and settled at a weight of its own.
+    /// Something went off (the truck before leaving), then it got heavier
+    /// again (another coming on), and settled at a weight of its own.
     NextTruck,
     /// Only ever lighter: the truck is pulling off and part of it is still
     /// on the deck.
     PartlyOff,
 }
 
-/// `locked`: the weight taken; `low`: the lightest reading since it began
-/// to move; `weight`: where it has settled now. `band`: how far a weight may
-/// be from another and be the same; `swap`: how far it must drop, and rise
-/// again, for one truck to have gone and another come.
-pub fn after_moving(locked: f64, low: f64, weight: f64, band: f64, swap: f64) -> AfterMoving {
-    if (weight - locked).abs() <= band {
-        AfterMoving::SameTruck
-    } else if low >= locked - band && weight > locked {
-        AfterMoving::MoreOfIt
-    } else if low < locked - swap && weight - low > swap {
-        AfterMoving::NextTruck
-    } else {
-        AfterMoving::PartlyOff
+/// `locked`: the weight taken; `trough`: if something has gone off since it
+/// began to move (the reading dropped by more than `swap`), the lightest
+/// reading since; `weight`: where it has settled now. `ignore`: how far a
+/// weight may be from the one taken and still be it (people on the deck);
+/// `swap`: how far it must drop, and rise again, for one truck to have gone
+/// and another come.
+pub fn after_moving(locked: f64, trough: Option<f64>, weight: f64, ignore: f64, swap: f64) -> AfterMoving {
+    match trough {
+        _ if (weight - locked).abs() <= ignore => AfterMoving::SameTruck,
+        None if weight > locked => AfterMoving::MoreOfIt,
+        Some(trough) if weight - trough > swap => AfterMoving::NextTruck,
+        _ => AfterMoving::PartlyOff,
     }
 }
 
@@ -313,8 +327,24 @@ struct Motion {
     since: i64,
     /// The lightest reading since it began.
     low: f64,
+    /// The heaviest it has settled at (the weight taken, to begin with).
+    high: f64,
+    /// Readings in a row more than the swap weight under `high`, since
+    /// when, and the lightest of them.
+    dip: Option<(u32, i64, f64)>,
+    /// Something went off: the lightest reading since.
+    gone: Option<f64>,
     /// Where it last stopped partly off, so that is said once.
     stopped: Option<f64>,
+    /// Settled heavier, nothing having gone off: that weight, and how long
+    /// the deck has read within the ignore weight of it (ms).
+    more: Option<(f64, i64)>,
+}
+
+impl Motion {
+    fn new(since: i64, weight: f64, locked: f64) -> Self {
+        Self { since, low: weight, high: locked, dip: None, gone: None, stopped: None, more: None }
+    }
 }
 
 /// Where the trigger is, for the status and the log.
@@ -347,6 +377,10 @@ impl Phase {
 const TRACE_MS: i64 = 60_000;
 const TRACE_EVERY_MS: i64 = 500;
 
+/// A truck that has stood at its weight this long is at rest, not still
+/// rolling on: weight coming on now is the next truck (see WeighingTrigger).
+pub const ROLLING_ON_MS: i64 = 15_000;
+
 /// When does a stream of readings amount to "a vehicle is on the deck"?
 ///
 /// A truck rolling on takes a second or two to settle, and the indicator's
@@ -373,11 +407,25 @@ const TRACE_EVERY_MS: i64 = 500;
 /// the window's middle reading, and the weighing is marked as estimated. If
 /// it settles properly later, that weight replaces it, up or down.
 ///
+/// People get out of the cab, or step onto the deck to talk to the driver:
+/// 100 to 500 lb either way (FGR, 2026-10-29). A weighed truck's reading that
+/// stays within `ignore_weight` of its weight is never the truck: the weight
+/// stays as it is, and a settle away from it inside that is `Kept`.
+///
 /// But a truck creeping on slowly can settle with only its front axle on the
-/// deck, and a tractor can settle before its trailer is on. So while the deck
-/// is loaded, a weight that settles again more than the tolerance above the
-/// one already taken is raised as a correction (`Reweighed`): the same truck,
-/// with more of it on the scale. That can happen more than once.
+/// deck, and a tractor can settle before its trailer is on. So a weight that
+/// settles more than `ignore_weight` above the one taken, with nothing having
+/// gone off, can be more of the same truck. It replaces the weight taken
+/// (`Reweighed`) once the deck has read within `ignore_weight` of it for
+/// longer than it did of the weight taken: the weight held longest wins.
+/// That can happen more than once. Except when the truck was at rest:
+/// axles come on while it is still rolling on, a few seconds after it first
+/// settled, whereas the next truck pulling on early finds it standing. If
+/// the weight taken had held `ROLLING_ON_MS` or more, the heavier weight is
+/// the next truck's front, and the truck ahead keeps its weight. Should that
+/// heavier weight hold longer still, with nothing going off, it is weighed
+/// as the next truck (`Weighed`, `follows`): the truck ahead may have rolled
+/// off as the next rolled on, the reading never dipping.
 ///
 /// The first settle is not always the truck at rest: it can settle 20 lb
 /// light while it is still easing back on its brakes, then hold the true
@@ -393,17 +441,19 @@ const TRACE_EVERY_MS: i64 = 500;
 /// Customers in a hurry pull on while the truck ahead is still on the deck
 /// (Hoffman, 2026-10-28), so the deck never reads clear between them. The
 /// truck weighed is held at its weight ("locked") while it stays inside
-/// `unsettled_tolerance` of it. Once the reading leaves that band, for
+/// `ignore_weight` of it. Once the reading leaves that band, for
 /// `CLEAR_READINGS` readings over `CLEAR_MS` (one stray frame is not
 /// movement), the truck is moving (`Moving`), and the lightest reading from
 /// then on is kept. When the deck settles again, `after_moving` decides:
 ///
 /// - back within the band of the weight taken: the same truck, shuffled
 ///   (`Stopped`, same);
-/// - heavier and never lighter than it: more of the same truck (`Reweighed`);
-/// - lighter by more than the clear weight at some point, and heavier again
-///   since by more than the clear weight: the truck ahead has gone and the
-///   next one is on: weighed afresh (`Weighed`, `follows` the one before);
+/// - heavier and nothing gone off: more of the same truck, or the next
+///   one's front (above);
+/// - lighter by more than the clear weight at some point (than the weight
+///   taken, or than a heavier weight it settled at since), and heavier
+///   again since by more than the clear weight: the truck ahead has gone and
+///   the next one is on: weighed afresh (`Weighed`, `follows` the one before);
 /// - only ever lighter: the truck pulling off, part of it still on
 ///   (`Stopped`, not same), still moving: if it then gets heavier again,
 ///   that is the next truck.
@@ -423,6 +473,12 @@ pub struct WeighingTrigger {
     arrived_at: Option<i64>,
     unsettled_ms: i64,
     unsettled_tolerance: f64,
+    /// People on the deck: see WeighingTrigger.
+    ignore: f64,
+    /// How long the deck has read within `ignore` of the weight taken (ms).
+    pub locked_ms: i64,
+    /// When the reading before this one came.
+    last_at: Option<i64>,
     /// The readings in a row at or under the clear weight, and when they began.
     clear_run: Option<(u32, i64)>,
     /// The readings in a row outside the weighed truck's band.
@@ -446,6 +502,8 @@ pub struct WeighingTrigger {
 impl WeighingTrigger {
     pub fn new(s: &TriggerSettings) -> Self {
         let stable_seconds = if s.stable_seconds != 0.0 { s.stable_seconds } else { 2.0 };
+        let unsettled_tolerance = s.unsettled_tolerance.max(s.stable_tolerance.max(0.0));
+        let ignore = s.ignore_weight.max(unsettled_tolerance);
         Self {
             min_weight: s.min_weight,
             clear_weight: s.clear_weight.min(s.min_weight),
@@ -456,11 +514,14 @@ impl WeighingTrigger {
             arrived: false,
             arrived_at: None,
             unsettled_ms: (s.unsettled_seconds.max(0.0) * 1000.0) as i64,
-            unsettled_tolerance: s.unsettled_tolerance.max(s.stable_tolerance.max(0.0)),
+            unsettled_tolerance,
+            ignore,
+            locked_ms: 0,
+            last_at: None,
             clear_run: None,
             off_band: None,
             motion: None,
-            swap_weight: s.clear_weight.min(s.min_weight).max(s.unsettled_tolerance.max(s.stable_tolerance.max(0.0))),
+            swap_weight: s.clear_weight.min(s.min_weight).max(ignore),
             trace: VecDeque::new(),
             settled: false,
             last_weighing: None,
@@ -507,6 +568,9 @@ impl WeighingTrigger {
             return None;
         }
         let sample = Sample { at, weight: reading.weight, motion: reading.motion };
+        // How long this reading stands for, a gap in the feed aside.
+        let dt = self.last_at.map_or(0, |last| (at - last).clamp(0, 1000));
+        self.last_at = Some(at);
         match self.trace.back_mut() {
             Some(last) if at - last.at < TRACE_EVERY_MS => last.motion |= reading.motion,
             _ => self.trace.push_back(sample),
@@ -540,10 +604,12 @@ impl WeighingTrigger {
                 return Some(TriggerEvent::Cleared { weight, at });
             }
             let last = self.last_weighing?;
+            if (weight - last.weight).abs() <= self.ignore {
+                self.locked_ms += dt;
+            }
             let Some(mut motion) = self.motion else {
-                // Heavier: more of the truck. Any settle at all after an
-                // estimate: the real weight.
-                if settled && (weight > last.weight + self.tolerance || last.estimated) {
+                // Any settle at all after an estimate: the real weight.
+                if settled && last.estimated {
                     self.off_band = None;
                     self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at, estimated: false });
                     self.taken(weight, at);
@@ -554,35 +620,57 @@ impl WeighingTrigger {
                     return Some(event);
                 }
                 // Out of its band for long enough: on the move.
-                self.off_band = if (weight - last.weight).abs() > self.unsettled_tolerance {
-                    Some(self.off_band.map_or((1, at), |(n, since)| (n + 1, since)))
-                } else {
-                    None
-                };
+                self.off_band =
+                    if (weight - last.weight).abs() > self.ignore { Some(self.off_band.map_or((1, at), |(n, since)| (n + 1, since))) } else { None };
                 if self.off_band.is_some_and(|(n, since)| n >= CLEAR_READINGS && at - since >= CLEAR_MS) {
                     let since = self.off_band.take().map_or(at, |(_, since)| since);
-                    self.motion = Some(Motion { since, low: weight, stopped: None });
+                    self.motion = Some(Motion::new(since, weight, last.weight));
                     self.run = None;
                     return Some(TriggerEvent::Moving { weight, locked: last.weight, at });
                 }
                 return None;
             };
+            let (ignore, swap) = (self.ignore, self.swap_weight);
             motion.low = motion.low.min(weight);
+            if settled && motion.gone.is_none() {
+                motion.high = motion.high.max(weight);
+            }
+            // Something going off: well under the heaviest it settled at, for
+            // more than a stray reading.
+            match motion.gone {
+                Some(low) => motion.gone = Some(low.min(weight)),
+                None => {
+                    motion.dip = (weight < motion.high - swap).then(|| motion.dip.map_or((1, at, weight), |(n, since, low)| (n + 1, since, low.min(weight))));
+                    if let Some((_, _, low)) = motion.dip.filter(|&(n, since, _)| n >= CLEAR_READINGS && at - since >= CLEAR_MS) {
+                        motion.gone = Some(low);
+                        motion.more = None;
+                    }
+                }
+            }
+            if let Some((more, held)) = motion.more {
+                if (weight - more).abs() <= ignore {
+                    motion.more = Some((more, held + dt));
+                }
+            }
             self.motion = Some(motion);
             if weight < self.min_weight {
                 return None;
             }
-            let (band, swap) = (self.unsettled_tolerance, self.swap_weight);
-            let mut verdict = settled.then(|| (after_moving(last.weight, motion.low, weight, band, swap), weight, false));
+            // Gone off: lighter than the weight taken (the old rule, which a
+            // single low reading meets), or a dip as above.
+            let trough = [(motion.low < last.weight - swap).then_some(motion.low), motion.gone].into_iter().flatten().reduce(f64::min);
+            let mut verdict = settled.then(|| (after_moving(last.weight, trough, weight, ignore, swap), weight, false));
             // The next truck, never settling: weighed anyway, as on an empty deck.
             let waited = self.unsettled_ms > 0 && at - motion.since >= self.unsettled_ms;
             if verdict.is_none() && waited && spans_window && (max - min) <= self.unsettled_tolerance {
                 let middle = self.middle();
-                if after_moving(last.weight, motion.low, middle, band, swap) == AfterMoving::NextTruck {
+                if after_moving(last.weight, trough, middle, ignore, swap) == AfterMoving::NextTruck {
                     verdict = Some((AfterMoving::NextTruck, middle, true));
                 }
             }
-            let (kind, weight, estimated) = verdict?;
+            let Some((kind, weight, estimated)) = verdict else {
+                return self.more_held(reading, at, last);
+            };
             let locked = last.weight;
             return match kind {
                 AfterMoving::SameTruck => {
@@ -590,19 +678,20 @@ impl WeighingTrigger {
                     Some(TriggerEvent::Stopped { weight, locked, same: true, at })
                 }
                 AfterMoving::MoreOfIt => {
-                    self.motion = None;
-                    self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at, estimated: false });
-                    self.taken(weight, at);
-                    Some(TriggerEvent::Reweighed { weight, previous: locked, unit: reading.unit, gross: reading.gross, at, held: None })
+                    if !motion.more.is_some_and(|(more, _)| (weight - more).abs() <= ignore) {
+                        self.motion = Some(Motion { more: Some((weight, self.stable_ms)), ..motion });
+                    }
+                    self.more_held(reading, at, last)
                 }
                 AfterMoving::NextTruck => {
                     self.motion = None;
                     self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at, estimated });
                     self.taken(weight, at);
+                    self.locked_ms = self.stable_ms;
                     Some(TriggerEvent::Weighed { weight, unit: reading.unit, gross: reading.gross, at, estimated, follows: Some(locked) })
                 }
                 AfterMoving::PartlyOff => {
-                    if motion.stopped.is_some_and(|w| (w - weight).abs() <= band) {
+                    if motion.stopped.is_some_and(|w| (w - weight).abs() <= ignore) {
                         return None; // said already
                     }
                     self.motion = Some(Motion { stopped: Some(weight), ..motion });
@@ -615,6 +704,7 @@ impl WeighingTrigger {
             self.arrived = true;
             self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at, estimated: false });
             self.taken(weight, at);
+            self.locked_ms = self.stable_ms;
             return Some(TriggerEvent::Weighed { weight, unit: reading.unit, gross: reading.gross, at, estimated: false, follows: None });
         }
         if !self.arrived && weight >= self.min_weight {
@@ -629,6 +719,7 @@ impl WeighingTrigger {
             self.armed = false;
             self.last_weighing = Some(LastWeighing { weight: middle, unit: reading.unit, at, estimated: true });
             self.taken(middle, at);
+            self.locked_ms = self.stable_ms;
             return Some(TriggerEvent::Weighed { weight: middle, unit: reading.unit, gross: reading.gross, at, estimated: true, follows: None });
         }
         // A truck that came on and backed off again without settling.
@@ -647,18 +738,38 @@ impl WeighingTrigger {
         self.kept = false;
     }
 
+    /// Settled heavier, nothing having gone off, and held longer than the
+    /// weight taken: more of the truck, or the next truck once the one
+    /// ahead was at rest (see WeighingTrigger).
+    fn more_held(&mut self, reading: &Reading, at: i64, last: LastWeighing) -> Option<TriggerEvent> {
+        let (weight, held) = self.motion?.more?;
+        if held <= self.locked_ms.max(self.stable_ms) {
+            return None;
+        }
+        let at_rest = self.locked_ms >= ROLLING_ON_MS;
+        self.motion = None;
+        self.last_weighing = Some(LastWeighing { weight, unit: reading.unit, at, estimated: false });
+        self.taken(weight, at);
+        self.locked_ms = held;
+        Some(if at_rest {
+            TriggerEvent::Weighed { weight, unit: reading.unit, gross: reading.gross, at, estimated: false, follows: Some(last.weight) }
+        } else {
+            TriggerEvent::Reweighed { weight, previous: last.weight, unit: reading.unit, gross: reading.gross, at, held: None }
+        })
+    }
+
     /// The weighed truck settling again inside the tolerance of its weight:
     /// the weight it holds longest is the one kept, until it settles
-    /// lighter (see WeighingTrigger).
+    /// lighter or heavier, people on the deck (see WeighingTrigger).
     fn longest_held(&mut self, reading: &Reading, at: i64, last: LastWeighing) -> Option<TriggerEvent> {
         let weight = reading.weight;
         if !self.settled || self.kept {
             self.run = None;
             return None;
         }
-        if weight < last.weight - self.tolerance {
-            // Lighter but further off than the band is the truck moving, not this.
-            if weight < last.weight - self.unsettled_tolerance {
+        if (weight - last.weight).abs() > self.tolerance {
+            // Further off than people is the truck moving, not this.
+            if (weight - last.weight).abs() > self.ignore {
                 self.run = None;
                 return None;
             }
@@ -796,7 +907,15 @@ mod tests {
 
     impl Rig {
         fn new(min_weight: f64, stable_seconds: f64, start: i64) -> Self {
-            let settings = TriggerSettings { min_weight, clear_weight: 1000.0, stable_seconds, stable_tolerance: 40.0, unsettled_seconds: 0.0, unsettled_tolerance: 200.0 };
+            let settings = TriggerSettings {
+                min_weight,
+                clear_weight: 1000.0,
+                stable_seconds,
+                stable_tolerance: 40.0,
+                unsettled_seconds: 0.0,
+                unsettled_tolerance: 200.0,
+                ignore_weight: 500.0,
+            };
             Self { trigger: WeighingTrigger::new(&settings), now: start, events: Vec::new() }
         }
         fn feed(&mut self, weight: f64, motion: bool) {
@@ -1009,14 +1128,14 @@ mod tests {
         t.feed_n(20, |i| 4760.0 + i as f64 * 20.0, false); // a slow creep
         t.feed_n(20, |i| 10000.0 + i as f64 * 1500.0, true); // rolling the rest of the way on
         t.feed_n(50, |i| 38200.0 + (i % 3) as f64 * 10.0, false); // the whole tractor, steady
+        assert_eq!(t.kinds(), ["weighed"]); // not yet held as long as the front axle was
+        t.feed_n(60, |i| 38200.0 + (i % 3) as f64 * 10.0, false);
         assert_eq!(t.kinds(), ["weighed", "reweighed"]);
         assert_eq!(t.previous_of(1), t.weight_of(0));
         assert!(t.weight_of(1) >= 38200.0);
         assert_eq!(t.trigger.last_weighing.unwrap().weight, t.weight_of(1));
-        t.feed_n(60, |_| 38210.0, false); // still there: nothing more
-        assert_eq!(t.kinds().len(), 2);
         t.feed_n(20, |i| 40000.0 + i as f64 * 1000.0, true); // the trailer comes on
-        t.feed_n(50, |i| 79000.0 + (i % 2) as f64 * 20.0, false);
+        t.feed_n(200, |i| 79000.0 + (i % 2) as f64 * 20.0, false);
         assert_eq!(t.kinds(), ["weighed", "reweighed", "reweighed"]);
         assert_eq!(t.previous_of(2), t.weight_of(1));
         t.feed_n(20, |_| 60000.0, true); // part of it rolls off: a lighter settle is not a correction
@@ -1025,6 +1144,40 @@ mod tests {
         t.feed_n(45, |_| 140.0, false);
         assert_eq!(t.kinds(), ["weighed", "reweighed", "reweighed", "cleared"]);
         assert_eq!(t.trigger.last_weighing.unwrap().weight, t.weight_of(2));
+    }
+
+    #[test]
+    fn people_getting_out_or_stepping_on_never_change_the_weight() {
+        // FGR, 2026-10-29: a 10,000 lb truck; the driver gets out, then one
+        // and two people come onto the deck to talk to him.
+        let mut t = Rig::new(4000.0, 2.0, 1000);
+        t.feed_n(40, |_| 0.0, false);
+        t.feed_n(10, |i| 1000.0 + i as f64 * 900.0, true);
+        t.feed_n(100, |_| 10_000.0, false);
+        assert_eq!(t.kinds(), ["weighed"]);
+        for weight in [9_800.0, 10_000.0, 10_180.0, 10_420.0, 10_000.0, 9_550.0, 10_350.0] {
+            t.feed_n(10, |_| (weight + 10_000.0) / 2.0, true); // stepping
+            t.feed_n(1200, |_| weight, false); // and a minute like that
+        }
+        assert_eq!(t.kinds(), ["weighed"]);
+        assert_eq!(t.trigger.last_weighing.unwrap().weight, 10_000.0);
+        assert_eq!(t.trigger.phase(), Phase::Weighed);
+        assert_eq!(t.every_event().iter().filter(|k| **k == "kept").count(), 1);
+        t.feed_n(45, |_| 0.0, false);
+        assert_eq!(t.kinds(), ["weighed", "cleared"]);
+    }
+
+    #[test]
+    fn an_axle_rolling_on_that_leaves_before_it_holds_as_long_does_not_replace_the_weight() {
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        t.feed_n(40, |_| 0.0, false);
+        t.feed_n(200, |_| 20_000.0, false); // weighed, then holds 8 s
+        t.feed_n(10, |_| 26_000.0, true);
+        t.feed_n(100, |_| 32_000.0, false); // 5 s heavier
+        t.feed_n(10, |_| 26_000.0, true);
+        t.feed_n(100, |_| 20_000.0, false); // and back
+        assert_eq!(t.kinds(), ["weighed"]);
+        assert_eq!(t.trigger.last_weighing.unwrap().weight, 20_000.0);
     }
 
     #[test]
@@ -1197,20 +1350,51 @@ mod tests {
     }
 
     #[test]
-    fn the_next_trucks_front_waiting_on_the_deck_is_corrected_once_it_is_on_alone() {
-        // The scale alone takes a front on the deck for more of the truck
-        // ahead (the pipeline asks the camera); once the one ahead has gone,
-        // the next is weighed on its own all the same.
+    fn the_next_trucks_front_is_not_taken_for_more_of_a_truck_at_rest() {
+        // The one ahead has stood 20 s; the next pulls its front on, waits,
+        // and comes the rest of the way on once the one ahead has gone.
         let mut t = Rig::new(4000.0, 2.0, 0);
         t.feed_n(40, |_| 0.0, false);
-        t.feed_n(60, |_| 32_000.0, false);
+        t.feed_n(400, |_| 32_000.0, false);
         t.feed_n(10, |_| 38_000.0, true);
-        t.feed_n(60, |_| 44_000.0, false);
-        assert_eq!(t.kinds(), ["weighed", "reweighed"]);
-        t.feed_n(20, |i| 44_000.0 - i as f64 * 1_600.0, true);
-        t.feed_n(60, |_| 27_500.0, false);
-        assert_eq!(t.kinds(), ["weighed", "reweighed", "weighed"]);
-        assert_eq!((t.weight_of(2), t.follows_of(2)), (27_500.0, Some(44_000.0)));
+        t.feed_n(1200, |_| 44_000.0, false); // a minute, longer than the one ahead stood
+                                             // Never the truck ahead's weight. Held that long, the scale cannot
+                                             // tell both trucks waiting from one gone as the other came on, and
+                                             // weighs it as the next truck; if the one ahead was still there, the
+                                             // next is weighed again on its own once that one has gone.
+        assert_eq!(t.kinds(), ["weighed", "weighed"]);
+        assert_eq!((t.weight_of(1), t.follows_of(1)), (44_000.0, Some(32_000.0)));
+        t.feed_n(20, |i| 44_000.0 - i as f64 * 1_000.0, true);
+        t.feed_n(60, |_| 12_000.0, false);
+        t.feed_n(10, |i| 12_000.0 + i as f64 * 2_500.0, true);
+        t.feed_n(60, |_| 37_500.0, false);
+        assert_eq!(t.kinds(), ["weighed", "weighed", "weighed"]);
+        assert_eq!((t.weight_of(2), t.follows_of(2)), (37_500.0, Some(44_000.0)));
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        t.feed_n(40, |_| 0.0, false);
+        t.feed_n(400, |_| 32_000.0, false);
+        t.feed_n(10, |_| 38_000.0, true);
+        t.feed_n(200, |_| 44_000.0, false); // 10 s
+        assert_eq!(t.kinds(), ["weighed"]);
+        assert_eq!(t.trigger.last_weighing.unwrap().weight, 32_000.0);
+        t.feed_n(20, |i| 44_000.0 - i as f64 * 1_000.0, true); // the one ahead drives off
+        t.feed_n(10, |i| 24_000.0 + i as f64 * 1_500.0, true); // the next rolls the rest of the way on
+        t.feed_n(60, |_| 37_500.0, false); // heavier than the one ahead
+        assert_eq!(t.kinds(), ["weighed", "weighed"]);
+        assert_eq!((t.weight_of(1), t.follows_of(1)), (37_500.0, Some(32_000.0)));
+    }
+
+    #[test]
+    fn the_next_truck_coming_on_as_the_one_at_rest_leaves_without_a_dip_is_weighed_on_its_own() {
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        t.feed_n(40, |_| 0.0, false);
+        t.feed_n(400, |_| 20_000.0, false); // 20 s at rest
+        t.feed_n(40, |i| 20_000.0 + i as f64 * 400.0, true); // one off as the other comes on
+        t.feed_n(300, |_| 36_000.0, false); // 15 s: not yet as long as the one ahead stood
+        assert_eq!(t.kinds(), ["weighed"]);
+        t.feed_n(200, |_| 36_000.0, false);
+        assert_eq!(t.kinds(), ["weighed", "weighed"]);
+        assert_eq!((t.weight_of(1), t.follows_of(1)), (36_000.0, Some(20_000.0)));
     }
 
     #[test]
@@ -1240,13 +1424,16 @@ mod tests {
 
     #[test]
     fn decides_what_a_settle_after_moving_is() {
-        let after = |low, weight| after_moving(30_000.0, low, weight, 200.0, 1_000.0);
-        assert_eq!(after(18_000.0, 30_150.0), AfterMoving::SameTruck);
-        assert_eq!(after(29_900.0, 45_000.0), AfterMoving::MoreOfIt);
-        assert_eq!(after(12_000.0, 45_000.0), AfterMoving::NextTruck);
-        assert_eq!(after(12_000.0, 25_000.0), AfterMoving::NextTruck);
-        assert_eq!(after(20_000.0, 20_000.0), AfterMoving::PartlyOff);
-        assert_eq!(after(20_000.0, 20_600.0), AfterMoving::PartlyOff); // a wobble back up is not a truck
+        let after = |gone, weight| after_moving(30_000.0, gone, weight, 500.0, 1_000.0);
+        assert_eq!(after(Some(18_000.0), 30_150.0), AfterMoving::SameTruck);
+        assert_eq!(after(None, 30_450.0), AfterMoving::SameTruck); // someone stepped on
+        assert_eq!(after(None, 29_600.0), AfterMoving::SameTruck); // two got out
+        assert_eq!(after(None, 45_000.0), AfterMoving::MoreOfIt);
+        assert_eq!(after(Some(12_000.0), 45_000.0), AfterMoving::NextTruck);
+        assert_eq!(after(Some(12_000.0), 25_000.0), AfterMoving::NextTruck);
+        assert_eq!(after(Some(20_000.0), 20_000.0), AfterMoving::PartlyOff);
+        assert_eq!(after(Some(20_000.0), 20_600.0), AfterMoving::PartlyOff); // a wobble back up is not a truck
+        assert_eq!(after(None, 28_000.0), AfterMoving::PartlyOff);
     }
 
     #[test]

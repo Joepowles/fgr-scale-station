@@ -224,6 +224,7 @@ impl ScaleCore {
     pub fn adopt(&mut self, previous: &ScaleCore) {
         self.trigger.armed = previous.trigger.armed;
         self.trigger.last_weighing = previous.trigger.last_weighing;
+        self.trigger.locked_ms = previous.trigger.locked_ms;
         self.status.last_weighing = previous.status.last_weighing.clone();
         self.status.loaded = !self.trigger.armed;
         self.status.phase = self.trigger.phase();
@@ -347,8 +348,9 @@ impl ScaleCore {
                 Some(TriggerEvent::Kept { weight, locked, .. }) => {
                     self.trace(now);
                     (self.sink)(ScaleEvent::Note(format!(
-                        "settled at {}, lighter than the {} weighed but still on the scale (the driver getting out?): {} kept",
+                        "settled at {}, {} than the {} weighed but by too little to be the truck (someone getting out or onto the scale?): {} kept",
                         super::frames::format_weight(weight, unit),
+                        if weight < locked { "lighter" } else { "heavier" },
                         super::frames::format_weight(locked, unit),
                         super::frames::format_weight(locked, unit)
                     )));
