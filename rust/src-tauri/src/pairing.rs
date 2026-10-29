@@ -15,11 +15,28 @@
 //! added to `matchers()`, and pairs the same way. The first matcher that
 //! recognises the truck names the pair.
 //!
-//! A weighing is in one pair at most. A truck that comes back again within
-//! the hour starts a new pair with its next weighing, rather than taking one
-//! from the pair before. Of the weighings that could pair, the nearest in
-//! time does. Pairs are worked out again whenever an entry's plate or weight
-//! changes, so a plate corrected by a later frame can make a pair or undo one.
+//! A truck can come back again and again: four loads dumped in the yard are
+//! eight weighings of one plate inside the hour. So a weighing is not simply
+//! paired with the nearest one. Instead:
+//!
+//! - The truck's weighings are taken together, as runs: weighings less than
+//!   an hour apart are in one run.
+//! - Each is empty or loaded. Empty is within `EMPTY_BAND` of the lightest
+//!   the truck has weighed in the history; anything heavier is loaded. Two
+//!   loaded weighings never pair, so a missed or misread empty weighing in
+//!   the middle does not make a "load" of the difference between two loads.
+//! - In a run, each loaded weighing pairs with the empty weighing next to
+//!   it: the one after it (in loaded, out empty) or the one before it (in
+//!   empty, out loaded), whichever way round pairs more of the run.
+//! - A loaded weighing left over (its empty weighing was missed, or the
+//!   driver tares once for several loads) takes its tare from the nearest
+//!   empty weighing of the truck under an hour away, though that one is in a
+//!   pair already. Its pair says `"shared": true`.
+//!
+//! Pairs are worked out again whenever an entry's plate or weight changes,
+//! so a plate corrected by a later frame can make a pair or undo one. Only
+//! the run the changed weighing is in is rewritten: older runs keep their
+//! pairs.
 
 use chrono::DateTime;
 use serde_json::{json, Value};
@@ -29,6 +46,9 @@ use crate::plate_choice;
 
 /// Less than this apart.
 pub const WITHIN_MS: i64 = 60 * 60 * 1000;
+/// Up to this much over the truck's lightest weighing is empty: fuel, the
+/// driver, mud. 5% of a 31,000 lb truck is about 1,500 lb.
+pub const EMPTY_BAND: f64 = 0.05;
 
 /// Says whether two weighings are of the same truck.
 pub trait Matcher: Send + Sync {
@@ -82,6 +102,10 @@ fn weighing(e: &Entry) -> bool {
     e.get("type").and_then(Value::as_str).unwrap_or("weighing") == "weighing" && weight(e).is_some() && at_ms(e).is_some()
 }
 
+fn same_truck(matchers: &[Box<dyn Matcher>], a: &Entry, b: &Entry) -> Option<(&'static str, String)> {
+    matchers.iter().find_map(|m| m.same_truck(a, b).map(|what| (m.name(), what)))
+}
+
 /// A pair worked out for an entry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pair {
@@ -90,37 +114,12 @@ pub struct Pair {
     pub matched: String,
 }
 
-/// The weighing `entry` pairs with, from `entries`: the same truck by one of
-/// the matchers, under an hour apart, in no other pair, and a different weight.
-pub fn find(entries: &[Entry], entry: &Entry, matchers: &[Box<dyn Matcher>]) -> Option<Pair> {
-    let own = id(entry)?;
-    if !weighing(entry) {
-        return None;
-    }
-    let (at, w) = (at_ms(entry)?, weight(entry)?);
-    entries
-        .iter()
-        .filter(|c| id(c).is_some_and(|c| c != own) && weighing(c) && unit(c) == unit(entry))
-        .filter(|c| partner(c).is_none_or(|p| p == own))
-        .filter(|c| weight(c) != Some(w))
-        .filter_map(|c| {
-            let apart = (at_ms(c)? - at).abs();
-            if apart >= WITHIN_MS {
-                return None;
-            }
-            let (by, matched) = matchers.iter().find_map(|m| m.same_truck(entry, c).map(|what| (m.name(), what)))?;
-            Some((apart, Pair { with: id(c)?.to_string(), by, matched }))
-        })
-        .min_by_key(|(apart, _)| *apart)
-        .map(|(_, pair)| pair)
-}
-
 /// The `pair` field for `e`, paired with `other`.
-fn pair_field(e: &Entry, other: &Entry, by: &str, matched: &str) -> Value {
+fn pair_field(e: &Entry, other: &Entry, by: &str, matched: &str, shared: bool) -> Value {
     let (w, ow) = (weight(e).unwrap_or_default(), weight(other).unwrap_or_default());
     let (gross, tare) = if w > ow { (w, ow) } else { (ow, w) };
     let minutes = ((at_ms(e).unwrap_or_default() - at_ms(other).unwrap_or_default()).abs() as f64 / 60_000.0).round();
-    json!({
+    let mut field = json!({
         "with": id(other),
         "role": if w > ow { "gross" } else { "tare" },
         "gross": weight_value(gross),
@@ -129,65 +128,141 @@ fn pair_field(e: &Entry, other: &Entry, by: &str, matched: &str) -> Value {
         "by": by,
         "match": matched,
         "minutes": minutes as i64,
-    })
+    });
+    if shared {
+        field["shared"] = true.into();
+    }
+    field
 }
 
-/// The changes to make to the history so `entry_id`'s pair is right: the
-/// patches, in the order to write them (the entry itself last), and the pair
-/// when there is one.
+/// The truck's weighings, oldest first: `entry` and every weighing a
+/// matcher says is the same truck, in the same unit.
+fn truck<'a>(entries: &'a [Entry], entry: &'a Entry, matchers: &[Box<dyn Matcher>]) -> Vec<&'a Entry> {
+    if !weighing(entry) {
+        return Vec::new();
+    }
+    let mut truck: Vec<&Entry> =
+        entries.iter().filter(|c| weighing(c) && unit(c) == unit(entry)).filter(|c| id(c) == id(entry) || same_truck(matchers, entry, c).is_some()).collect();
+    truck.sort_by_key(|e| at_ms(e));
+    truck
+}
+
+/// Pairs within one run (oldest first, under an hour between neighbours):
+/// for each weighing, its partner's index and whether that tare is shared.
+fn pair_run(run: &[&Entry], empty: &[bool]) -> Vec<Option<(usize, bool)>> {
+    let n = run.len();
+    let close = |a: usize, b: usize| (at_ms(run[a]).unwrap_or_default() - at_ms(run[b]).unwrap_or_default()).abs() < WITHIN_MS;
+    // Neighbours one way round: loaded then empty (`loaded_first`), or empty then loaded.
+    let neighbours = |loaded_first: bool| {
+        let mut out = vec![None; n];
+        let mut i = 0;
+        while i + 1 < n {
+            if empty[i] != loaded_first && empty[i + 1] == loaded_first && close(i, i + 1) {
+                out[i] = Some((i + 1, false));
+                out[i + 1] = Some((i, false));
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        out
+    };
+    let (a, b) = (neighbours(true), neighbours(false));
+    let count = |p: &[Option<(usize, bool)>]| p.iter().flatten().count();
+    let first = |p: &[Option<(usize, bool)>]| p.iter().position(Option::is_some).unwrap_or(n);
+    // More pairs wins; then the one whose first pair starts sooner.
+    let mut pairs = if (count(&b), first(&a)) > (count(&a), first(&b)) { b } else { a };
+    // A load with no empty weighing beside it takes the nearest one's tare.
+    for i in 0..n {
+        if empty[i] || pairs[i].is_some() {
+            continue;
+        }
+        let at = at_ms(run[i]).unwrap_or_default();
+        let nearest = (0..n).filter(|&j| empty[j] && close(i, j)).min_by_key(|&j| (at_ms(run[j]).unwrap_or_default() - at).abs());
+        if let Some(j) = nearest {
+            pairs[i] = Some((j, true));
+        }
+    }
+    pairs
+}
+
+/// The changes to make to the history so the pairs of `entry_id`'s truck are
+/// right around it: the patches, in the order to write them (the entry itself
+/// last), and the entry's pair when it has one.
 pub fn plan(entries: &[Entry], entry_id: &str, matchers: &[Box<dyn Matcher>]) -> (Vec<(String, Entry)>, Option<Pair>) {
     let by_id = |want: &str| entries.iter().find(|e| id(e) == Some(want));
     let Some(entry) = by_id(entry_id) else { return (Vec::new(), None) };
-    let found = find(entries, entry, matchers);
-    let mut patches = Vec::new();
-    let mut set = |e: &Entry, pair: Value| {
-        if e.get("pair").unwrap_or(&Value::Null) != &pair {
+    let mut fields: Vec<(&Entry, Value)> = Vec::new();
+    let mut found = None;
+    // The truck it was paired with before, if that is not this one now.
+    let old = partner(entry).and_then(by_id).filter(|old| same_truck(matchers, entry, old).is_none());
+    for anchor in [old, Some(entry)].into_iter().flatten() {
+        let truck = truck(entries, anchor, matchers);
+        let Some(here) = truck.iter().position(|e| id(e) == id(anchor)) else { continue };
+        let at = |i: usize| at_ms(truck[i]).unwrap_or_default();
+        // The run around it.
+        let (mut start, mut end) = (here, here);
+        while start > 0 && at(start) - at(start - 1) < WITHIN_MS {
+            start -= 1;
+        }
+        while end + 1 < truck.len() && at(end + 1) - at(end) < WITHIN_MS {
+            end += 1;
+        }
+        let run = &truck[start..=end];
+        let lightest = truck.iter().filter_map(|e| weight(e)).fold(f64::INFINITY, f64::min);
+        let empty: Vec<bool> = run.iter().map(|e| weight(e).unwrap_or_default() <= lightest * (1.0 + EMPTY_BAND)).collect();
+        for (i, pair) in pair_run(run, &empty).into_iter().enumerate() {
+            let e = run[i];
+            let field = match pair {
+                Some((j, shared)) => {
+                    let (by, matched) = same_truck(matchers, e, run[j]).unwrap_or(("plate", String::new()));
+                    if id(e) == Some(entry_id) {
+                        found = Some(Pair { with: id(run[j]).unwrap_or_default().to_string(), by, matched: matched.clone() });
+                    }
+                    pair_field(e, run[j], by, &matched, shared)
+                }
+                None => Value::Null,
+            };
+            fields.push((e, field));
+        }
+    }
+    if !fields.iter().any(|(e, _)| id(e) == Some(entry_id)) {
+        fields.push((entry, Value::Null));
+    }
+    let mut patches: Vec<(String, Entry)> = fields
+        .into_iter()
+        .filter(|(e, field)| e.get("pair").unwrap_or(&Value::Null) != field)
+        .map(|(e, field)| {
             let mut patch = Entry::new();
-            patch.insert("pair".into(), pair);
-            patches.push((id(e).unwrap_or_default().to_string(), patch));
-        }
-    };
-    // The one it was paired with before, if that is not the one now.
-    if let Some(old) = partner(entry).filter(|old| found.as_ref().is_none_or(|f| f.with != *old)).and_then(by_id) {
-        if partner(old) == Some(entry_id) {
-            set(old, Value::Null);
-        }
-    }
-    match found.as_ref().and_then(|f| Some((f, by_id(&f.with)?))) {
-        Some((pair, other)) => {
-            set(other, pair_field(other, entry, pair.by, &pair.matched));
-            set(entry, pair_field(entry, other, pair.by, &pair.matched));
-        }
-        None => set(entry, Value::Null),
-    }
+            patch.insert("pair".into(), field);
+            (id(e).unwrap_or_default().to_string(), patch)
+        })
+        .collect();
+    patches.sort_by_key(|(id, _)| id == entry_id);
     (patches, found)
 }
 
-/// Works out `entry_id`'s pair and writes it to both entries. Returns the
-/// pair's line for the log when a pair was made or changed.
+/// Works out the pairs around `entry_id` and writes them. Returns the
+/// entry's line for the log when its pair was made or changed.
 pub fn update(history: &History, entry_id: &str) -> std::io::Result<Option<String>> {
     let entries = history.read();
     let (patches, pair) = plan(&entries, entry_id, &matchers());
-    if patches.is_empty() {
-        return Ok(None);
-    }
-    let mut written = None;
     for (id, patch) in &patches {
-        let entry = history.update(id, patch, None)?;
-        if id == entry_id {
-            written = entry;
-        }
+        history.update(id, patch, None)?;
     }
-    let line = match (pair, written.as_ref().and_then(|e| e.get("pair")).filter(|p| !p.is_null())) {
-        (Some(pair), Some(field)) => {
-            let unit = written.as_ref().map_or("lb", unit);
+    let Some((_, patch)) = patches.iter().find(|(id, _)| id == entry_id) else { return Ok(None) };
+    let field = &patch["pair"];
+    let line = match pair {
+        Some(pair) if !field.is_null() => {
+            let unit = entries.iter().find(|e| id(e) == Some(entry_id)).map_or("lb", unit);
             let w = |key: &str| format!("{} {unit}", field[key]);
             format!(
-                "paired with {} ({} {}, {} min apart): gross {}, tare {}, net {}",
+                "paired with {} ({} {}, {} min apart{}): gross {}, tare {}, net {}",
                 pair.with,
                 pair.by,
                 pair.matched,
                 field["minutes"],
+                if field["shared"] == true { ", tare shared" } else { "" },
                 w("gross"),
                 w("tare"),
                 w("net")
@@ -259,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn the_nearest_in_time_pairs_and_a_paired_weighing_is_taken() {
+    fn a_load_takes_the_last_tare_until_its_own_empty_weighing_comes() {
         let mut entries = vec![
             entry("first-in", "2026-10-29T09:30:00Z", 79000.0, Some("7KX2210")),
             entry("first-out", "2026-10-29T09:50:00Z", 31400.0, Some("7KX2210")),
@@ -267,11 +342,14 @@ mod tests {
         ];
         apply(&mut entries, "first-out");
         assert_eq!(entries[0]["pair"]["with"], "first-out");
-        // Back for another load: first-out is nearer, but taken.
-        assert_eq!(apply(&mut entries, "second-in"), None);
+        // Back for another load: first-out's tare for now, shared.
+        assert_eq!(apply(&mut entries, "second-in").unwrap().with, "first-out");
+        assert_eq!(entries[2]["pair"]["shared"], true);
+        assert_eq!(entries[1]["pair"]["with"], "first-in");
         entries.push(entry("second-out", "2026-10-29T10:30:00Z", 31500.0, Some("7KX2210")));
         assert_eq!(apply(&mut entries, "second-out").unwrap().with, "second-in");
         assert_eq!(entries[2]["pair"]["net"], 48600);
+        assert!(entries[2]["pair"].get("shared").is_none());
         assert_eq!(entries[1]["pair"]["with"], "first-in");
     }
 
@@ -318,5 +396,104 @@ mod tests {
         out.insert("unit".into(), json!("kg"));
         let entries = vec![entry("in", "2026-10-29T10:00:00Z", 80120.0, Some("7KX2210")), out];
         assert_eq!(plan(&entries, "out", &matchers()).1, None);
+    }
+}
+
+/// A truck dumping load after load in the yard: in loaded, out empty, again
+/// and again, the weighings arriving one at a time.
+#[cfg(test)]
+mod yard_runs {
+    use super::*;
+
+    const LOADS: [(&str, u32, f64); 8] = [
+        ("in1", 0, 80000.0),
+        ("out1", 7, 31000.0),
+        ("in2", 14, 79000.0),
+        ("out2", 21, 31100.0),
+        ("in3", 28, 81000.0),
+        ("out3", 35, 30900.0),
+        ("in4", 42, 78000.0),
+        ("out4", 49, 31050.0),
+    ];
+
+    fn arrive(entries: &mut Vec<Entry>, id: &str, minute: u32, weight: f64, plate: Option<&str>) {
+        let at = format!("2026-10-29T10:{minute:02}:00Z");
+        let plate = plate.map(|p| json!({ "text": p, "confidence": 0.9 }));
+        let e = json!({ "id": id, "at": at, "type": "weighing", "weight": weight_value(weight), "unit": "lb", "plate": plate });
+        entries.push(e.as_object().unwrap().clone());
+        let (patches, _) = plan(entries, id, &matchers());
+        for (target, patch) in patches {
+            entries.iter_mut().find(|e| e["id"] == target.as_str()).unwrap().extend(patch);
+        }
+    }
+
+    /// "gross+tare=net" for each load.
+    fn loads(entries: &[Entry]) -> Vec<String> {
+        entries
+            .iter()
+            .filter_map(|e| {
+                e.get("pair").filter(|p| p["role"] == "gross").map(|p| format!("{}+{}={}", e["id"].as_str().unwrap(), p["with"].as_str().unwrap(), p["net"]))
+            })
+            .collect()
+    }
+
+    fn run(plate_of: impl Fn(&str) -> Option<&'static str>) -> Vec<Entry> {
+        let mut entries = Vec::new();
+        for (id, minute, weight) in LOADS {
+            arrive(&mut entries, id, minute, weight, plate_of(id));
+        }
+        entries
+    }
+
+    #[test]
+    fn four_loads_pair_in_with_out() {
+        let entries = run(|_| Some("7KX2210"));
+        assert_eq!(loads(&entries), ["in1+out1=49000", "in2+out2=47900", "in3+out3=50100", "in4+out4=46950"]);
+        assert!(entries.iter().all(|e| e["pair"].get("shared").is_none()));
+    }
+
+    #[test]
+    fn a_missed_empty_weighing_does_not_pair_two_loads() {
+        // Before: in1 and in2 paired for a 1,000 lb "load".
+        let entries = run(|id| (id != "out1").then_some("7KX2210"));
+        assert_eq!(loads(&entries), ["in1+out2=48900", "in2+out2=47900", "in3+out3=50100", "in4+out4=46950"]);
+        assert_eq!(entries[0]["pair"]["shared"], true);
+    }
+
+    #[test]
+    fn a_missed_load_does_not_shift_the_pairs_after_it() {
+        // Before: out2 went with in3, out3 with in4, and out4 was left over.
+        let entries = run(|id| (id != "in2").then_some("7KX2210"));
+        assert_eq!(loads(&entries), ["in1+out1=49000", "in3+out3=50100", "in4+out4=46950"]);
+    }
+
+    #[test]
+    fn a_misread_corrected_later_puts_the_pairs_right() {
+        let mut entries = run(|id| Some(if id == "out1" { "7KX2Z10" } else { "7KX2210" }));
+        entries[1]["plate"] = json!({ "text": "7KX2210", "confidence": 0.95 });
+        let (patches, _) = plan(&entries, "out1", &matchers());
+        for (target, patch) in patches {
+            entries.iter_mut().find(|e| e["id"] == target.as_str()).unwrap().extend(patch);
+        }
+        assert_eq!(loads(&entries), ["in1+out1=49000", "in2+out2=47900", "in3+out3=50100", "in4+out4=46950"]);
+    }
+
+    #[test]
+    fn one_tare_serves_every_load_in_the_hour() {
+        let mut entries = Vec::new();
+        for (id, minute, weight) in [("tare", 0, 31000.0), ("in1", 10, 80000.0), ("in2", 20, 79000.0), ("in3", 30, 81000.0), ("in4", 40, 78000.0)] {
+            arrive(&mut entries, id, minute, weight, Some("7KX2210"));
+        }
+        // Before: in2 and in3 paired with each other for 2,000 lb.
+        assert_eq!(loads(&entries), ["in1+tare=49000", "in2+tare=48000", "in3+tare=50000", "in4+tare=47000"]);
+    }
+
+    #[test]
+    fn a_truck_never_weighed_empty_has_no_net() {
+        let mut entries = Vec::new();
+        for (id, minute, weight) in [("in1", 0, 80000.0), ("in2", 20, 79000.0)] {
+            arrive(&mut entries, id, minute, weight, Some("7KX2210"));
+        }
+        assert!(loads(&entries).is_empty());
     }
 }

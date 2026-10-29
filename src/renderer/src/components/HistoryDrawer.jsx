@@ -13,7 +13,7 @@ function PairLine({ pair, unit }) {
       {part('gross', 'Gross')}
       {part('tare', 'Tare')}
       <span className="text-emerald-300">Net <span className="mono font-bold">{fmtWeight(pair.net, unit)}</span></span>
-      <span className="text-gray-500">{how}, {pair.minutes} min apart</span>
+      <span className="text-gray-500">{how}, {pair.minutes} min apart{pair.shared ? ', tare shared with another load' : ''}</span>
     </div>
   );
 }
