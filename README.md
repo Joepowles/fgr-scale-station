@@ -71,7 +71,10 @@ internet does not.
   another screen.
 - **Gross, tare and net.** Two weighings of the same plate less than an hour
   apart are paired: the heavier is the gross, the lighter the tare, and the
-  history and the live picture show the net. A truck's appearance is meant to
+  history and the live picture show the net. A truck making load after load
+  in the hour pairs each load with its own empty weighing, and a load whose
+  empty weighing was missed (or a truck tared once) uses the nearest tare.
+  A truck's appearance is meant to
   pair trucks with no plate the same way once it can be recognised.
 
 ### Alerts
