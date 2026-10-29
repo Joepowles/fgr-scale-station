@@ -2,6 +2,10 @@
 
 Newest first. The app shows this file on the Updates tab of its settings.
 
+## 0.2.14
+
+- Keep gross, tare and net straight over several loads in an hour.
+
 ## 0.2.13
 
 - Pair two weighings of one truck into gross, tare and net.
