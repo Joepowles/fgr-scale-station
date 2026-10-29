@@ -69,6 +69,10 @@ internet does not.
   as many days as you choose (seven by default).
 - A history panel beside the picture, or popped out into its own window on
   another screen.
+- **Gross, tare and net.** Two weighings of the same plate less than an hour
+  apart are paired: the heavier is the gross, the lighter the tare, and the
+  history and the live picture show the net. A truck's appearance is meant to
+  pair trucks with no plate the same way once it can be recognised.
 
 ### Alerts
 - Rules made of a *when* and a *then*: something on the scale, a truck
