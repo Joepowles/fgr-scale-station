@@ -1,7 +1,7 @@
 {
   "name": "falcon-scale-station-rs",
   "productName": "Falcon Scale Station",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "private": true,
   "type": "module",
   "scripts": {
