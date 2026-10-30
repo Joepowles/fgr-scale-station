@@ -18,6 +18,8 @@ use chrono::{DateTime, Local, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::trucks::{self, Book};
+
 pub const LOG_FILE: &str = "history.jsonl";
 pub const PHOTO_DIR: &str = "photos";
 pub const PRUNE_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -80,6 +82,8 @@ pub struct History {
     save_photos: bool,
     save_log: bool,
     on_entry: OnEntry,
+    /// The names given to trucks, kept beside the log.
+    book: Book,
 }
 
 /// "20261006-142010": the local time an entry's id and photo name start with.
@@ -107,7 +111,7 @@ fn time_of(entry: &Entry) -> Option<i64> {
 
 impl History {
     pub fn new(folder: PathBuf, settings: &HistorySettings, on_entry: OnEntry) -> std::io::Result<Self> {
-        let mut history = Self { folder: PathBuf::new(), retention_days: 7.0, save_photos: true, save_log: true, on_entry };
+        let mut history = Self { folder: PathBuf::new(), retention_days: 7.0, save_photos: true, save_log: true, on_entry, book: Book::default() };
         history.configure(folder, settings)?;
         Ok(history)
     }
@@ -118,6 +122,7 @@ impl History {
         self.retention_days = if settings.retention_days >= 1.0 { settings.retention_days } else { 7.0 };
         self.save_photos = settings.save_photos;
         self.save_log = settings.save_log;
+        self.book = Book::load(&self.folder);
         Ok(())
     }
 
@@ -158,7 +163,8 @@ impl History {
             fs::write(self.folder.join(PHOTO_DIR).join(&name), photo)?;
             entry["photo"] = name.into();
         }
-        let Value::Object(entry) = entry else { unreachable!("json! of an object") };
+        let Value::Object(mut entry) = entry else { unreachable!("json! of an object") };
+        self.book.stamp(&mut entry);
         if self.save_log {
             let mut log = OpenOptions::new().create(true).append(true).open(self.log_path())?;
             writeln!(log, "{}", Value::Object(entry.clone()))?;
@@ -176,6 +182,7 @@ impl History {
             return Ok(None);
         };
         entry.extend(patch.clone());
+        self.book.stamp(entry);
         if let (Some(photo), true) = (photo, self.save_photos) {
             let name = entry.get("photo").and_then(Value::as_str).map_or_else(|| format!("{id}.jpg"), str::to_string);
             if let Some(path) = self.photo_path(&name) {
@@ -187,6 +194,42 @@ impl History {
         self.write_all(&entries)?;
         (self.on_entry)(&updated);
         Ok(Some(updated))
+    }
+
+    /// Names the truck of an entry: the entry, the plate in the book of
+    /// names, and every other weighing with that plate. An empty name takes
+    /// it away. Returns the entry as it now is.
+    pub fn name(&mut self, id: &str, name: &str) -> std::io::Result<Option<Entry>> {
+        let mut entries = self.read();
+        let Some(at) = entries.iter().position(|e| e.get("id").and_then(Value::as_str) == Some(id)) else {
+            return Ok(None);
+        };
+        let plate = trucks::plate_of(&entries[at]);
+        let name = self.book.set(plate.as_deref(), name)?;
+        let mut changed = vec![at];
+        let entry = &mut entries[at];
+        entry.remove("nickname");
+        if !name.is_empty() {
+            entry.insert("nickname".into(), json!({ "name": name, "by": "operator" }));
+        }
+        self.book.stamp(entry);
+        if plate.is_some() {
+            for (i, e) in entries.iter_mut().enumerate() {
+                if i != at && trucks::plate_of(e) == plate && self.book.stamp(e) {
+                    changed.push(i);
+                }
+            }
+        }
+        self.write_all(&entries)?;
+        for &i in changed.iter().rev() {
+            (self.on_entry)(&entries[i]);
+        }
+        Ok(Some(entries[at].clone()))
+    }
+
+    /// The names given so far, latest first.
+    pub fn names(&self) -> &[String] {
+        self.book.names()
     }
 
     /// Every entry, oldest first. A line that does not parse is skipped.
@@ -416,5 +459,33 @@ mod tests {
         assert_eq!((s.entries, s.photo_bytes), (2, 8));
         assert_eq!(s.oldest, Some(json!("2026-10-06T14:00:00.000Z")));
         assert_eq!(s.newest, Some(json!("2026-10-06T15:00:00.000Z")));
+    }
+
+    #[test]
+    fn naming_a_truck_names_its_plate_past_and_future() {
+        let mut h = history();
+        let plated = |w: f64, plate: &str| NewEvent { plate: Some(json!({ "text": plate })), ..weighing(w) };
+        let first = h.record(plated(80000.0, "7KX2210"), None).unwrap();
+        let other = h.record(plated(50000.0, "P865012"), None).unwrap();
+        let second = h.record(plated(31000.0, "7KX-2210"), None).unwrap();
+        let id = |e: &Entry| e["id"].as_str().unwrap().to_string();
+        let named = h.name(&id(&second), " Hoffman/Steve ").unwrap().unwrap();
+        assert_eq!(named["nickname"], json!({ "name": "Hoffman/Steve", "by": "operator" }));
+        let by_id = |h: &History, e: &Entry| h.read().into_iter().find(|x| x["id"] == e["id"]).unwrap();
+        assert_eq!(by_id(&h, &first)["nickname"], json!({ "name": "Hoffman/Steve", "by": "plate" }));
+        assert!(by_id(&h, &other).get("nickname").is_none());
+        // A later weighing, and one with the plate misread by a character.
+        assert_eq!(h.record(plated(80000.0, "7KX2210"), None).unwrap()["nickname"]["by"], "plate");
+        assert_eq!(h.record(plated(80000.0, "7KX221O"), None).unwrap()["nickname"]["by"], "similar plate");
+        // Kept by the next run of the app, even after the history is gone.
+        let folder = h.folder().to_path_buf();
+        fs::remove_file(folder.join(LOG_FILE)).unwrap();
+        let again = History::new(folder, &HistorySettings::default(), Box::new(|_| {})).unwrap();
+        assert_eq!(again.record(plated(1.0, "7KX2210"), None).unwrap()["nickname"]["name"], "Hoffman/Steve");
+        assert_eq!(again.names(), ["Hoffman/Steve"]);
+        // Taking the name off the plate.
+        let mut again = again;
+        let last = again.list(1).remove(0);
+        assert!(again.name(&id(&last), "").unwrap().unwrap().get("nickname").is_none());
     }
 }

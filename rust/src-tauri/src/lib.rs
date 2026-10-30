@@ -22,6 +22,7 @@ mod server;
 mod settings;
 mod stamp;
 mod truck_photos;
+mod trucks;
 mod updater;
 mod window_state;
 
@@ -449,6 +450,37 @@ fn history_list(state: State<AppState>, args: Option<ListArgs>) -> Vec<history::
     state.history.lock().unwrap().as_ref().map(|h| h.list(limit)).unwrap_or_default()
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+struct NameArgs {
+    id: String,
+    name: String,
+}
+
+/// The operator names the truck of a weighing ("Hoffman/Steve"). The name
+/// goes with its plate from then on, and can pair a truck with no plate.
+#[tauri::command]
+fn history_name(app: AppHandle, state: State<AppState>, args: Option<NameArgs>) -> Result<Option<history::Entry>, String> {
+    let args = args.unwrap_or_default();
+    let mut guard = state.history.lock().unwrap();
+    let Some(history) = guard.as_mut() else { return Ok(None) };
+    let Some(entry) = history.name(&args.id, &args.name).map_err(|e| e.to_string())? else { return Ok(None) };
+    let named = trucks::name_of(&entry).filter(|_| trucks::given(&entry));
+    log(&app, named.map_or_else(|| format!("weighing {}: name taken off", args.id), |n| format!("weighing {}: named {n}", args.id)));
+    match pairing::update(history, &args.id) {
+        Ok(Some(line)) => log(&app, format!("weighing {}: {line}", args.id)),
+        Ok(None) => {}
+        Err(err) => log(&app, format!("could not pair the weighing: {err}")),
+    }
+    Ok(history.list(usize::MAX).into_iter().find(|e| e.get("id").and_then(Value::as_str) == Some(args.id.as_str())))
+}
+
+/// The names given so far, latest first, to offer as the operator types.
+#[tauri::command]
+fn history_names(state: State<AppState>) -> Vec<String> {
+    state.history.lock().unwrap().as_ref().map(|h| h.names().to_vec()).unwrap_or_default()
+}
+
 #[tauri::command]
 fn history_stats(state: State<AppState>) -> Option<Stats> {
     state.history.lock().unwrap().as_ref().map(History::stats)
@@ -848,6 +880,8 @@ pub fn run() {
             plates_read_now,
             plates_status,
             history_list,
+            history_name,
+            history_names,
             history_stats,
             history_prune,
             history_open_folder,

@@ -42,7 +42,7 @@ use chrono::DateTime;
 use serde_json::{json, Value};
 
 use crate::history::{weight_value, Entry, History};
-use crate::plate_choice;
+use crate::{plate_choice, trucks};
 
 /// Less than this apart.
 pub const WITHIN_MS: i64 = 60 * 60 * 1000;
@@ -73,9 +73,30 @@ impl Matcher for PlateMatch {
     }
 }
 
+/// The same name ("Hoffman/Steve"), given by the operator or found by the
+/// exact plate (not a guess from a similar one), for
+/// a truck with no plate read on at least one of its weighings. Two plates
+/// that differ are two trucks, whatever they are called: a driver may move
+/// between them.
+pub struct NameMatch;
+
+impl Matcher for NameMatch {
+    fn name(&self) -> &'static str {
+        "name"
+    }
+
+    fn same_truck(&self, a: &Entry, b: &Entry) -> Option<String> {
+        if trucks::plate_of(a).is_some() && trucks::plate_of(b).is_some() {
+            return None;
+        }
+        let name = |e: &Entry| trucks::sure(e).then(|| trucks::name_of(e)).flatten().map(str::to_lowercase);
+        (name(a)? == name(b)?).then(|| trucks::name_of(a).unwrap_or_default().to_string())
+    }
+}
+
 /// The matchers in use, surest first.
 pub fn matchers() -> Vec<Box<dyn Matcher>> {
-    vec![Box::new(PlateMatch)]
+    vec![Box::new(PlateMatch), Box::new(NameMatch)]
 }
 
 fn id(e: &Entry) -> Option<&str> {
@@ -312,6 +333,36 @@ mod tests {
         assert!(entries[1].get("pair").is_none());
         // Nothing more to do the second time.
         assert!(plan(&entries, "out", &matchers()).0.is_empty());
+    }
+
+    fn named(mut e: Entry, name: &str, by: &str) -> Entry {
+        e.insert("nickname".into(), json!({ "name": name, "by": by }));
+        e
+    }
+
+    #[test]
+    fn a_name_pairs_a_truck_with_no_plate() {
+        let mut entries = vec![
+            named(entry("in", "2026-10-29T10:00:00Z", 80120.0, Some("7KX2210")), "Hoffman/Steve", "plate"),
+            named(entry("out", "2026-10-29T10:20:00Z", 31460.0, None), "hoffman/steve", "operator"),
+        ];
+        let pair = apply(&mut entries, "out").unwrap();
+        assert_eq!((pair.with.as_str(), pair.by, pair.matched.as_str()), ("in", "name", "hoffman/steve"));
+        assert_eq!(entries[0]["pair"]["net"], json!(48660));
+    }
+
+    #[test]
+    fn a_name_does_not_join_two_plates_or_trust_a_guess() {
+        let two_plates = vec![
+            named(entry("in", "2026-10-29T10:00:00Z", 80120.0, Some("7KX2210")), "Hoffman/Steve", "plate"),
+            named(entry("out", "2026-10-29T10:20:00Z", 31460.0, Some("P865012")), "Hoffman/Steve", "plate"),
+        ];
+        assert_eq!(plan(&two_plates, "out", &matchers()).1, None);
+        let guessed = vec![
+            named(entry("in", "2026-10-29T10:00:00Z", 80120.0, Some("7KX2211")), "Hoffman/Steve", "similar plate"),
+            named(entry("out", "2026-10-29T10:20:00Z", 31460.0, None), "Hoffman/Steve", "operator"),
+        ];
+        assert_eq!(plan(&guessed, "out", &matchers()).1, None);
     }
 
     #[test]

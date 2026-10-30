@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { fmtWeight, fmtTime } from '../lib';
+import { fmtWeight, fmtTime, truckName, inputClass } from '../lib';
 
 // Two weighings of one truck under an hour apart (pairing.rs): this one is
 // the gross or the tare, and the line gives all three.
@@ -7,7 +7,7 @@ function PairLine({ pair, unit }) {
   const part = (key, label) => (
     <span className={pair.role === key ? 'text-gray-100' : ''}>{label} <span className="mono">{fmtWeight(pair[key], unit)}</span></span>
   );
-  const how = pair.by === 'plate' ? `same plate ${pair.match}` : `same truck by ${pair.by}`;
+  const how = pair.by === 'plate' ? `same plate ${pair.match}` : pair.by === 'name' ? `same name ${pair.match}` : `same truck by ${pair.by}`;
   return (
     <div className="text-xs text-gray-400 flex flex-wrap gap-x-3">
       {part('gross', 'Gross')}
@@ -18,12 +18,42 @@ function PairLine({ pair, unit }) {
   );
 }
 
+// The operator names the truck ("Company/Driver"). With a plate, the name
+// sticks to it: every weighing of that plate, before and after, shows it.
+function NameBox({ entry, names, onSaved }) {
+  const [text, setText] = useState(entry.nickname?.name || '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => { setText(entry.nickname?.name || ''); }, [entry.id, entry.nickname?.name]);
+  const guess = entry.nickname?.by === 'similar plate';
+  const save = async (name) => {
+    setBusy(true);
+    setError('');
+    try { await window.station.history.name({ id: entry.id, name }); onSaved(); } catch (err) { setError(err.message); }
+    setBusy(false);
+  };
+  return (
+    <form className="flex flex-wrap items-center gap-2 text-sm" onClick={(e) => e.stopPropagation()} onSubmit={(e) => { e.preventDefault(); save(text); }}>
+      <input className={`${inputClass} !w-64`} list="truck-names" maxLength={60} placeholder="Name this truck, e.g. Company/Driver" value={text} onChange={(e) => setText(e.target.value)} />
+      <datalist id="truck-names">{names.map((n) => <option key={n} value={n} />)}</datalist>
+      <button type="submit" disabled={busy} className="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40">{guess ? 'Confirm' : 'Save'}</button>
+      {entry.nickname?.name && <button type="button" disabled={busy} onClick={() => save('')} className="px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700">Remove</button>}
+      <span className="text-xs text-gray-500">
+        {guess ? 'Guessed from a named plate one character off this one. Confirm if it is right.' : entry.plate?.text ? `Every weighing of ${entry.plate.text} gets this name.` : 'No plate: only this weighing gets the name.'}
+      </span>
+      {error && <span className="text-xs text-red-400">{error}</span>}
+    </form>
+  );
+}
+
 // The weighings, newest first, sliding over the picture. Click one for the
 // photo at full size.
 // standalone: filling a window of its own, rather than over the picture.
 export default function HistoryDrawer({ info, onClose, standalone = false }) {
   const [entries, setEntries] = useState([]);
   const [stats, setStats] = useState(null);
+  const [names, setNames] = useState([]);
+  const naming = !!window.station.history.name;
   // The id, not the entry: the entry is updated while the truck is still on
   // the deck (a better plate, a closer picture), and the preview follows it.
   const [openId, setOpenId] = useState(null);
@@ -32,6 +62,7 @@ export default function HistoryDrawer({ info, onClose, standalone = false }) {
   const load = async () => {
     setEntries(await window.station.history.list({ limit: 300 }));
     setStats(await window.station.history.stats());
+    if (naming) setNames(await window.station.history.names());
   };
   useEffect(() => { load(); return window.station.history.onEntry(() => load()); }, []);
 
@@ -64,6 +95,7 @@ export default function HistoryDrawer({ info, onClose, standalone = false }) {
               <div className="flex items-center gap-2">
                 <span className="mono font-bold text-emerald-300">{fmtWeight(e.weight, e.unit)}</span>
                 {e.plate?.text && <span className="mono text-xs font-bold px-1.5 py-0.5 rounded bg-gray-100 text-black">{e.plate.text}</span>}
+                {truckName(e) && <span className="text-xs font-semibold text-sky-300 truncate">{truckName(e)}</span>}
               </div>
               <div className="text-xs text-gray-500">{fmtTime(e.at)}{e.vehicle?.label ? ` · ${e.vehicle.label}` : ''}{e.corrected ? ` · first read ${fmtWeight(e.corrected.from, e.unit)}` : ''}{e.note ? ` · ${e.note}` : ''}</div>
               {e.pair && <PairLine pair={e.pair} unit={e.unit} />}
@@ -74,9 +106,10 @@ export default function HistoryDrawer({ info, onClose, standalone = false }) {
       {open && (
         <div className="absolute inset-0 bg-black/95 flex flex-col" onClick={() => setOpenId(null)}>
           <div className="px-4 py-3 flex items-center justify-between text-sm">
-            <span><span className="mono font-bold text-emerald-300">{fmtWeight(open.weight, open.unit)}</span>{open.plate?.text ? <> · <span className="mono font-bold">{open.plate.text}</span></> : ''} · {fmtTime(open.at)}{open.pair && <PairLine pair={open.pair} unit={open.unit} />}</span>
+            <span><span className="mono font-bold text-emerald-300">{fmtWeight(open.weight, open.unit)}</span>{open.plate?.text ? <> · <span className="mono font-bold">{open.plate.text}</span></> : ''}{truckName(open) ? <> · <span className="font-semibold text-sky-300">{truckName(open)}</span></> : ''} · {fmtTime(open.at)}{open.pair && <PairLine pair={open.pair} unit={open.unit} />}</span>
             <span className="text-gray-500">click to close</span>
           </div>
+          {naming && <div className="px-4 pb-3"><NameBox entry={open} names={names} onSaved={load} /></div>}
           {open.photo ? <img src={photoUrl(open)} alt="" className="flex-1 min-h-0 object-contain" /> : <p className="flex-1 flex items-center justify-center text-gray-500">No photo for this weighing</p>}
         </div>
       )}

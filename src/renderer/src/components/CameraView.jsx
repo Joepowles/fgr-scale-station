@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { fmtWeight, cornerClass } from '../lib';
+import { fmtWeight, cornerClass, truckName } from '../lib';
 
 // Seconds the picture may trail the newest frame received: past the first it
 // plays fast until back under the last; past the middle one it reconnects.
@@ -41,7 +41,7 @@ export const viewForBox = (box, w, h) => {
 // The picture, and the chips over it: the plate in its corner, the weight in
 // its own, stacked when they share one. A fresh <video> on every reconnect,
 // because a stalled MediaSource never recovers on its own.
-export default function CameraView({ settings, info, scale, display }) {
+export default function CameraView({ settings, info, scale, display, lastEntry }) {
   const [tick, setTick] = useState(0);
   const [error, setError] = useState('');
   const [hd, setHd] = useState(false);
@@ -169,8 +169,13 @@ export default function CameraView({ settings, info, scale, display }) {
   const showWeight = display === 'picture' && scale && scale.connected && scale.weight !== null && scale.weight !== undefined;
   const plate = scale?.loaded && scale.lastWeighing?.plate?.text ? scale.lastWeighing.plate : null;
   const showPlate = settings.plates.enabled && !!plate;
-  const share = showPlate && showWeight && plateCorner === weightCorner;
 
+  // The name the operator gave this truck, under its plate or on its own.
+  const name = scale?.loaded ? truckName(lastEntry) : '';
+  const nameChip = settings.plates.enabled && name ? (
+    <div className="rounded-md bg-black/80 border border-sky-300 text-sky-200 font-bold leading-none shadow-lg text-[clamp(14px,2vw,32px)] px-[0.5em] py-[0.3em] max-w-[40vw] truncate">{name}</div>
+  ) : null;
+  const share = (showPlate || !!nameChip) && showWeight && plateCorner === weightCorner;
   const plateChip = showPlate ? (
     <div className="rounded-md bg-black/90 border-2 border-white text-white mono font-extrabold tracking-widest leading-none shadow-lg text-[clamp(20px,4vw,64px)] px-[0.5em] py-[0.25em]" title={`Plate read at ${Math.round((plate.confidence || 0) * 100)}% confidence`}>
       {plate.text}
@@ -205,9 +210,10 @@ export default function CameraView({ settings, info, scale, display }) {
         </div>
       )}
       <div className="absolute inset-0 pointer-events-none">
-        {plateChip && (
+        {(plateChip || nameChip) && (
           <div className={`absolute flex flex-col gap-2 ${cornerClass(plateCorner)}`}>
             {plateChip}
+            {nameChip}
             {share && weightChip}
           </div>
         )}
