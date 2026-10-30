@@ -13,6 +13,12 @@ export const timeAgo = (value) => {
   return new Date(value).toLocaleString();
 };
 
+// The name the operator gave the truck (trucks.rs), with a question mark
+// when it is only a guess from a plate one character off a named one.
+export const truckName = (entry) => {
+  const n = entry?.nickname;
+  return n?.name ? `${n.name}${n.by === 'similar plate' ? '?' : ''}` : '';
+};
 export const fmtTime = (value) => new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' });
 
 export const CORNERS = [

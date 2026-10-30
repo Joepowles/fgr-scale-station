@@ -3,7 +3,7 @@ import CameraView from './components/CameraView';
 import SettingsModal from './components/SettingsModal';
 import HistoryDrawer from './components/HistoryDrawer';
 import AlertCenter from './components/AlertCenter';
-import { fmtWeight } from './lib';
+import { fmtWeight, truckName } from './lib';
 
 // The whole window: the camera with its overlays, a thin header, and two
 // panels that slide over it - settings and history. Mirrors the Scale card
@@ -27,7 +27,9 @@ export default function App() {
     reload();
     const offs = [
       window.station.scale.onStatus(setScale),
-      window.station.history.onEntry((entry) => setLastEntry(entry)),
+      // The newest weighing: naming or pairing an older one rewrites it too,
+      // and that is not the truck on the scale.
+      window.station.history.onEntry((entry) => setLastEntry((last) => (!last || entry.id === last.id || entry.at >= last.at ? entry : last))),
       window.station.window.onFullscreen(setFullscreen),
       window.station.updates.onReady(setUpdateReady),
       window.station.scale.onPlate((plate) => setScale((s) => (s?.lastWeighing ? { ...s, lastWeighing: { ...s.lastWeighing, plate } } : s)))
@@ -106,6 +108,7 @@ export default function App() {
             <div className="text-right text-sm text-gray-400">
               <div className={weightState === 'settled' ? 'text-emerald-400' : weightState === 'scale offline' ? 'text-red-400' : ''}>{weightState || 'waiting'}</div>
               {scale?.loaded && scale.lastWeighing?.plate?.text && <div className="mono text-2xl font-bold text-white mt-1">{scale.lastWeighing.plate.text}</div>}
+              {scale?.loaded && truckName(lastEntry) && <div className="text-lg font-semibold text-sky-300 mt-1">{truckName(lastEntry)}</div>}
               {scale?.lastWeighing && <div className="mt-1">Last weighing {fmtWeight(scale.lastWeighing.weight, scale.lastWeighing.unit)}</div>}
               {/* The last weighing written paired with an earlier one of the same truck. */}
               {lastEntry?.pair && <div className="mt-1">Gross {fmtWeight(lastEntry.pair.gross, lastEntry.unit)} · Tare {fmtWeight(lastEntry.pair.tare, lastEntry.unit)} · <span className="text-emerald-400 font-bold">Net {fmtWeight(lastEntry.pair.net, lastEntry.unit)}</span></div>}

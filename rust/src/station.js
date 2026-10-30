@@ -35,6 +35,7 @@ window.station = {
   plates: { readNow: call('plates_read_now'), status: call('plates_status') },
   history: {
     list: call('history_list'), stats: call('history_stats'), prune: call('history_prune'),
+    name: call('history_name'), names: call('history_names'),
     openFolder: call('history_open_folder'), chooseFolder: call('history_choose_folder'), onEntry: on('history:entry')
   },
   log: { recent: call('log_recent'), onLine: on('log'), write: call('log_write') },
