@@ -50,7 +50,8 @@ VEHICLES = {2, 3, 5, 6, 7}
 MIN_SCORE = 0.3
 FRAME_NAME = re.compile(r"frame-(\d+)-(\d{6})\.(\d{3})\.jpg$")
 LOG_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})Z (.*)$")
-FOLLOWS = ("pulled on before the truck ahead had left", "maybe the next truck's front", "the next truck pulled on")
+# lib.rs logs this when the scale weighs the next truck before the deck cleared.
+FOLLOWS = "the next truck: it pulled on before"
 
 
 def model(name):
@@ -76,8 +77,12 @@ class Visit:
         self.info = json.loads((folder / "visit.json").read_text()) if (folder / "visit.json").exists() else {}
         self.log = (folder / "log.txt").read_text(errors="replace") if (folder / "log.txt").exists() else ""
         self.frames = sorted(folder.glob("frame-*.jpg"))
-        self.follows = any(f in self.log for f in FOLLOWS)
         self.times = self._frame_times()
+        # The log reaches back 30 s before the visit, so only lines after
+        # its start count.
+        start = self._start()
+        self.handover = next((t for t, text in self.events() if FOLLOWS in text and (start is None or t >= start)), None)
+        self.follows = self.handover is not None
 
     def _frame_times(self):
         """Each frame's time in UTC. Frames are named in local time; the
@@ -107,12 +112,16 @@ class Visit:
             prev = t
         return out
 
+    def _start(self):
+        started = self.info.get("started")
+        return datetime.fromisoformat(started.replace("Z", "+00:00")) if started else None
+
     def events(self):
         """(time, text) for the log lines about trucks moving and weighing."""
         out = []
         for line in self.log.splitlines():
             m = LOG_LINE.match(line)
-            if m and re.search(r"moving|weighed|pulled on|next truck|deck clear|coming onto", m.group(2)):
+            if m and re.search(r"moving|weighed|pulled on|next truck|deck clear|coming onto|same plate", m.group(2)):
                 out.append((datetime.fromisoformat(m.group(1)).replace(tzinfo=timezone.utc), m.group(2)))
         return out
 
@@ -335,7 +344,8 @@ def main():
         rows = []
         for v in b2b:
             items = crops[v.name]
-            moving = next((t for t, text in v.events() if "moving" in text), None)
+            moving = max((t for t, text in v.events() if "moving" in text and t <= v.handover), default=None)
+            same_plate = any("same plate" in text and t >= v.handover for t, text in v.events())
             before = [c for c in items if c["time"] and moving and c["time"] < moving]
             if not before or len(items) < 2:
                 report.append(f"| {v.name} | not enough crops around the move | |")
@@ -345,8 +355,9 @@ def main():
             for n in embedders:
                 s = float(a["prints"][n] @ b["prints"][n])
                 cells.append(f"{s:.3f} {'different' if s < thresholds.get(n, -1) else 'same'}")
-            report.append(f"| {v.name} | " + " | ".join(cells) + " |")
-            rows.append((a["crop"], b["crop"], f"{v.name}  before move / end"))
+            note = " (app: same plate, so same truck)" if same_plate else ""
+            report.append(f"| {v.name}{note} | " + " | ".join(cells) + " |")
+            rows.append((a["crop"], b["crop"], f"{v.name}{note}  before move / end"))
         sheet(rows, args.out / "back-to-back.jpg", "Back-to-back visits: before the move | at the end")
 
     for name, pairs in hardest.items():
