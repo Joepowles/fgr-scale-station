@@ -27,8 +27,9 @@
 //!
 //! Unlike the Electron app there is no vehicle detector: the scale is what
 //! says a truck is there, the reader finds every plate in the whole frame,
-//! and plate_choice picks the truck's (the biggest, toward the side the
-//! settings favour) from among them.
+//! truck_photos sets aside any that sit still from the truck's first frames
+//! on (a vehicle parked in view), and plate_choice picks the truck's (the
+//! biggest, toward the side the settings favour) from the rest.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -413,6 +414,7 @@ impl Pipeline {
         let every = Duration::from_secs_f64(s["plates"]["retrySeconds"].as_f64().filter(|&n| n > 0.0).unwrap_or(1.0).clamp(0.25, 30.0));
         let mut burst = Burst::start(url, FEED_FPS).map_err(|err| self.log(format!("full-resolution feed: {err}; using single snapshots"))).ok();
         let (mut taken, mut steady) = (0u32, 0u32);
+        let mut parked_logged: Vec<String> = Vec::new();
         let number = session.lock().unwrap().number;
         while taken < max_frames && !session.lock().unwrap().over && !session.lock().unwrap().frozen {
             let started = tokio::time::Instant::now();
@@ -441,10 +443,11 @@ impl Pipeline {
                 }
             }
             let settled = session.lock().unwrap().weighing.is_some();
-            let read = if read_plates {
-                let width = camera::snapshot::jpeg_size(&jpeg).map_or(0.0, |(w, _)| f64::from(w));
+            let width = camera::snapshot::jpeg_size(&jpeg).map_or(0.0, |(w, _)| f64::from(w));
+            // Every plate-like read, so truck_photos can tell a parked vehicle.
+            let seen: Option<Vec<_>> = if read_plates {
                 match self.app.state::<AppState>().plates.read(&jpeg).await {
-                    Ok(plates) => plate_choice::choose(&plates, width, &rules).plate,
+                    Ok(plates) => Some(plates.into_iter().filter(|p| plate_choice::looks_like_plate(&p.text, &rules)).collect()),
                     Err(err) => {
                         self.log(format!("plate read failed: {err}"));
                         None
@@ -453,16 +456,34 @@ impl Pipeline {
             } else {
                 None
             };
-            let seen = read.as_ref().map(|r| format!("{} {:.0}%", r.text, r.confidence * 100.0));
-            let change = {
+            let (change, read, parked) = {
                 let mut s = session.lock().unwrap();
                 // It began to move while this frame was read: the frame may be
                 // of the next truck, so it is not this one's.
                 if s.frozen || s.over {
                     break;
                 }
-                s.truck.add(jpeg, taken_at, read, settled)
+                let mut read = None;
+                let change = s.truck.add(
+                    jpeg,
+                    taken_at,
+                    seen.as_deref(),
+                    |plates| {
+                        read = plate_choice::choose(plates, width, &rules).plate;
+                        read.clone()
+                    },
+                    settled,
+                );
+                (change, read, s.truck.parked())
             };
+            for text in parked {
+                if parked_logged.contains(&text) {
+                    continue;
+                }
+                self.log(format!("truck {number}, frame {taken}: plate {text} has not moved since the truck came on: a vehicle parked in view, not taken"));
+                parked_logged.push(text);
+            }
+            let seen = read.as_ref().map(|r| format!("{} {:.0}%", r.text, r.confidence * 100.0));
             if change.plate || change.photo {
                 let plate = session.lock().unwrap().truck.plate();
                 let what = match (change.plate, &plate) {

@@ -63,6 +63,9 @@ internet does not.
 - Picks the truck's plate from everything in frame: the largest or clearest
   read, optionally favouring one side of the picture. Ignore lists and a
   minimum confidence filter out signage and misreads.
+- Ignores vehicles parked in view: a plate that sits in the same place from
+  the moment a truck rolls on is not the truck on the deck, however clearly
+  it reads.
 
 ### History
 - A JSON-lines log plus stamped photos in a folder of your choice, kept for
