@@ -17,6 +17,17 @@ Visits with back-to-back trucks (the log says one pulled on before the one
 ahead had left) are kept out of that, and checked on their own: the truck
 before it began to move against what was on the deck at the end.
 
+Within one visit is the easy case, so the plates the app read label harder
+pairs too. Each truck the log weighs ("truck N: weighed ...") gets the crop
+taken as it was weighed; two of those with the same plate in different visits
+(often loaded and empty, or day and night) are the same truck, and two with
+different plates are different trucks. Then every weighed truck is put
+against the next one weighed, which is the comparison the app would make.
+
+Boxes whose centre is in --ignore (fractions of the frame; by default the
+bottom-left corner, where Hoffman's pallet stack is taken for a vehicle) or
+smaller than --min-area of the frame are not the truck on the deck.
+
     python3 -m venv ~/reid-venv && ~/reid-venv/bin/pip install onnxruntime numpy pillow
     ~/reid-venv/bin/python tools/reid-bench/bench.py ~/yard-samples --out ~/reid-bench-out
 
@@ -52,6 +63,11 @@ FRAME_NAME = re.compile(r"frame-(\d+)-(\d{6})\.(\d{3})\.jpg$")
 LOG_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})Z (.*)$")
 # lib.rs logs this when the scale weighs the next truck before the deck cleared.
 FOLLOWS = "the next truck: it pulled on before"
+# pipeline.rs: "truck 12: weighed 31,240 kg, plate ABC123 read as it came on".
+TRUCK_LINE = re.compile(r"^truck (\d+)[:,] (.*)$")
+PLATE = re.compile(r"\bplate ([A-Z0-9]{3,10})\b")
+# The crop taken as a truck is weighed: the first within this long after.
+WEIGHED_WINDOW = timedelta(seconds=20)
 
 
 def model(name):
@@ -116,6 +132,28 @@ class Visit:
         started = self.info.get("started")
         return datetime.fromisoformat(started.replace("Z", "+00:00")) if started else None
 
+    def trucks(self):
+        """{number: {"weighed": time, "plate": text or None}} for each truck
+        the log weighs after the visit began."""
+        start = self._start()
+        out = {}
+        for line in self.log.splitlines():
+            m = LOG_LINE.match(line)
+            t = m and TRUCK_LINE.match(m.group(2))
+            if not t:
+                continue
+            at = datetime.fromisoformat(m.group(1)).replace(tzinfo=timezone.utc)
+            if start and at < start:
+                continue
+            truck = out.setdefault(int(t.group(1)), {"weighed": None, "plates": []})
+            if truck["weighed"] is None and (t.group(2).startswith("weighed ") or "on the scale - photographing" in t.group(2)):
+                truck["weighed"] = at
+            truck["plates"] += PLATE.findall(t.group(2))
+        for truck in out.values():
+            plates = truck.pop("plates")
+            truck["plate"] = max(set(plates), key=plates.count) if plates else None
+        return {n: t for n, t in out.items() if t["weighed"]}
+
     def events(self):
         """(time, text) for the log lines about trucks moving and weighing."""
         out = []
@@ -149,8 +187,19 @@ def detect(session, image):
     return boxes
 
 
-def biggest(boxes):
-    return max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]), default=None)
+def truck_box(boxes, size, ignore, min_area):
+    """The biggest box that could be the truck on the deck."""
+    w, h = size
+    ix1, iy1, ix2, iy2 = ignore
+    keep = []
+    for b in boxes:
+        cx, cy = (b[0] + b[2]) / 2 / w, (b[1] + b[3]) / 2 / h
+        if ix1 <= cx <= ix2 and iy1 <= cy <= iy2:
+            continue
+        if (b[2] - b[0]) * (b[3] - b[1]) < min_area * w * h:
+            continue
+        keep.append(b)
+    return max(keep, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]), default=None)
 
 
 def crop(image, box, pad=0.05):
@@ -240,9 +289,12 @@ def main():
     p.add_argument("--out", type=Path, default=Path("reid-bench-out"))
     p.add_argument("--max-visits", type=int, default=0, help="for a quick try")
     p.add_argument("--every", type=int, default=3, help="look at every Nth frame")
+    p.add_argument("--ignore", default="0,0.55,0.3,1", help="x1,y1,x2,y2 (fractions): boxes centred here are not the truck")
+    p.add_argument("--min-area", type=float, default=0.04, help="smallest box, as a share of the frame")
     args = p.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     random.seed(1)
+    ignore = [float(x) for x in args.ignore.split(",")]
 
     visits = load_visits(args.samples)
     if args.max_visits:
@@ -266,7 +318,7 @@ def main():
         for i in range(0, len(v.frames), args.every):
             image = Image.open(v.frames[i]).convert("RGB")
             t = time.perf_counter()
-            box = biggest(detect(detector, image))
+            box = truck_box(detect(detector, image), image.size, ignore, args.min_area)
             timing["detect"] += time.perf_counter() - t
             counts["detect"] += 1
             if box is None:
@@ -283,6 +335,7 @@ def main():
         crops[v.name] = items
         print(f"[{n}/{len(visits)}] {v.name}: {len(items)} crops", file=sys.stderr)
 
+    visits_by_name = {v.name: v for v in visits}
     plain = [v for v in visits if not v.follows and len(crops[v.name]) >= 2]
     b2b = [v for v in visits if v.follows]
 
@@ -360,6 +413,88 @@ def main():
             rows.append((a["crop"], b["crop"], f"{v.name}{note}  before move / end"))
         sheet(rows, args.out / "back-to-back.jpg", "Back-to-back visits: before the move | at the end")
 
+    # Weighed trucks, labelled by plate.
+    weighed = []
+    for v in visits:
+        for number, truck in sorted(v.trucks().items()):
+            near = [c for c in crops[v.name] if c["time"] and truck["weighed"] <= c["time"] <= truck["weighed"] + WEIGHED_WINDOW]
+            if near:
+                weighed.append({"visit": v.name, "number": number, "plate": truck["plate"], "at": truck["weighed"], "crop": near[0]})
+    weighed.sort(key=lambda t: t["at"])
+    plated = [t for t in weighed if t["plate"]]
+    report += ["", "## Weighed trucks, labelled by plate", "",
+               f"{len(weighed)} weighed trucks with a crop as they were weighed, {len(plated)} with a plate, "
+               f"{len({t['plate'] for t in plated})} different plates. Same truck: same plate, different visits. "
+               "Different trucks: different plates. Unplated trucks are left out here.", ""]
+    pos_pairs, neg_pairs = [], []
+    for x in range(len(plated)):
+        for y in range(x + 1, len(plated)):
+            a, b = plated[x], plated[y]
+            if a["visit"] == b["visit"]:
+                continue
+            (pos_pairs if a["plate"] == b["plate"] else neg_pairs).append((a, b))
+    plate_thresholds = {}
+    if not pos_pairs or not neg_pairs:
+        report.append(f"Not enough: {len(pos_pairs)} same-plate pairs, {len(neg_pairs)} different-plate pairs.")
+    else:
+        report += [f"{len(pos_pairs)} same-plate pairs, {len(neg_pairs)} different-plate pairs.", "",
+                   "| fingerprint | AUC | caught at 1% false alarms | caught at 5% | threshold at 1% | threshold at 5% |", "|---|---|---|---|---|---|"]
+        for name in embedders:
+            pos = [float(a["crop"]["prints"][name] @ b["crop"]["prints"][name]) for a, b in pos_pairs]
+            neg = [float(a["crop"]["prints"][name] @ b["crop"]["prints"][name]) for a, b in neg_pairs]
+            t1, r1 = at_false_alarms(pos, neg, 0.01)
+            t5, r5 = at_false_alarms(pos, neg, 0.05)
+            plate_thresholds[name] = t5
+            report.append(f"| {name} | {auc(pos, neg):.3f} | {r1:.0%} | {r5:.0%} | {t1:.3f} | {t5:.3f} |")
+        worst = sorted(pos_pairs, key=lambda p: float(p[0]["crop"]["prints"]["clip-b32"] @ p[1]["crop"]["prints"]["clip-b32"]))[:8]
+        sheet([(a["crop"]["crop"], b["crop"]["crop"], f"{float(a['crop']['prints']['clip-b32'] @ b['crop']['prints']['clip-b32']):.3f}  {a['plate']}  {a['visit']} vs {b['visit']}")
+               for a, b in worst], args.out / "same-plate-least-alike.jpg", "clip-b32: same plate, least alike")
+        alike = sorted(neg_pairs, key=lambda p: -float(p[0]["crop"]["prints"]["clip-b32"] @ p[1]["crop"]["prints"]["clip-b32"]))[:8]
+        sheet([(a["crop"]["crop"], b["crop"]["crop"], f"{float(a['crop']['prints']['clip-b32'] @ b['crop']['prints']['clip-b32']):.3f}  {a['plate']} vs {b['plate']}")
+               for a, b in alike], args.out / "different-plate-most-alike.jpg", "clip-b32: different plates, most alike")
+
+    # Each weighed truck against the next one weighed: what the app would compare.
+    report += ["", "## Each weighed truck vs the next one weighed", ""]
+    if not plate_thresholds:
+        report.append("Needs the plate thresholds above.")
+    else:
+        report.append("Threshold: the 5% false-alarm one from the plate pairs above. 'Told apart' is the share of pairs "
+                      "scoring under it, i.e. the fingerprint says a different truck.")
+        report.append("")
+        report.append("| pairs | count | " + " | ".join(f"{n} told apart" for n in embedders) + " |")
+        report.append("|---|---|" + "---|" * len(embedders))
+        groups = {"different plates": [], "one or both unplated": [], "same plate (truck came back)": [], "back-to-back hand-overs": []}
+        for a, b in zip(weighed, weighed[1:]):
+            if a["visit"] == b["visit"]:
+                groups["back-to-back hand-overs"].append((a, b))
+            elif not a["plate"] or not b["plate"]:
+                groups["one or both unplated"].append((a, b))
+            else:
+                groups["same plate (truck came back)" if a["plate"] == b["plate"] else "different plates"].append((a, b))
+        for label, pairs in groups.items():
+            if not pairs:
+                report.append(f"| {label} | 0 |" + " |" * len(embedders))
+                continue
+            cells = []
+            for n in embedders:
+                apart = [float(a["crop"]["prints"][n] @ b["crop"]["prints"][n]) < plate_thresholds[n] for a, b in pairs]
+                cells.append(f"{np.mean(apart):.0%}")
+            report.append(f"| {label} | {len(pairs)} | " + " | ".join(cells) + " |")
+        handovers = groups["back-to-back hand-overs"]
+        if handovers:
+            report += ["", "| hand-over | plates | " + " | ".join(embedders) + " |", "|---|---|" + "---|" * len(embedders)]
+            for a, b in handovers:
+                cells = []
+                for n in embedders:
+                    s = float(a["crop"]["prints"][n] @ b["crop"]["prints"][n])
+                    cells.append(f"{s:.3f} {'different' if s < plate_thresholds[n] else 'same'}")
+                report.append(f"| {a['visit']} truck {a['number']} -> {b['number']} | {a['plate'] or '-'} / {b['plate'] or '-'} | " + " | ".join(cells) + " |")
+            sheet([(a["crop"]["crop"], b["crop"]["crop"], f"{a['visit']}  truck {a['number']} -> {b['number']}") for a, b in handovers],
+                  args.out / "handovers-weighed.jpg", "Back-to-back: each truck as it was weighed")
+    # Every chosen crop, to check by eye that the box is the truck.
+    sheet([(c["crop"], Image.open(visits_by_name[t["visit"]].frames[c["i"]]).convert("RGB"), f"{t['visit']} truck {t['number']} {t['plate'] or ''}")
+           for t in weighed[:40] for c in [t["crop"]]], args.out / "weighed-crops.jpg", "Weighed trucks: crop | whole frame (first 40)")
+
     for name, pairs in hardest.items():
         sheet([(a["crop"], b["crop"], f"{s:.3f}  {x}  vs  {y}") for s, x, y, a, b in pairs], args.out / f"hardest-different-{name}.jpg",
               f"{name}: the most alike pairs from different visits")
@@ -367,7 +502,8 @@ def main():
     sheet([(a["crop"], b["crop"], k) for k, (a, b) in sample], args.out / "same-truck-examples.jpg", "Same visit, a third and two thirds through")
 
     report += ["", "## Files", "", "- back-to-back.jpg", "- hardest-different-<fingerprint>.jpg: different trucks each method found most alike",
-               "- same-truck-examples.jpg"]
+               "- same-truck-examples.jpg", "- same-plate-least-alike.jpg, different-plate-most-alike.jpg", "- handovers-weighed.jpg",
+               "- weighed-crops.jpg: the crop beside its whole frame, to check the box is the truck"]
     (args.out / "report.md").write_text("\n".join(report) + "\n")
     print("\n".join(report))
 
