@@ -658,6 +658,14 @@ const HISTORY_WINDOW: &str = "history";
 const HISTORY_OPEN_FILE: &str = "history-window-open";
 /// The app is closing: the history window going too is not the user closing it.
 static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Counts the history window's openings, so a close that is forgotten late
+/// does not forget a window opened again since.
+static HISTORY_OPENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// How long after the history window closes the app must still be running
+/// for that to be the user closing just it. The taskbar's "Close all windows"
+/// can close it a moment before the main window, and it was then forgotten,
+/// not opening again with the app.
+const HISTORY_CLOSE_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn open_history_window(app: &AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(HISTORY_WINDOW) {
@@ -677,11 +685,17 @@ fn open_history_window(app: &AppHandle) -> Result<(), String> {
     window_state::restore(&win, &dir, window_state::HISTORY_FILE);
     window_state::track(&win, &dir, window_state::HISTORY_FILE);
     let _ = fs::write(dir.join(HISTORY_OPEN_FILE), "");
+    let opened = HISTORY_OPENED.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     win.on_window_event(move |event| {
         if let WindowEvent::CloseRequested { .. } = event {
-            if !QUITTING.load(std::sync::atomic::Ordering::SeqCst) {
-                let _ = fs::remove_file(dir.join(HISTORY_OPEN_FILE));
-            }
+            let dir = dir.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(HISTORY_CLOSE_SETTLE).await;
+                let ordering = std::sync::atomic::Ordering::SeqCst;
+                if !QUITTING.load(ordering) && HISTORY_OPENED.load(ordering) == opened {
+                    let _ = fs::remove_file(dir.join(HISTORY_OPEN_FILE));
+                }
+            });
         }
     });
     Ok(())
@@ -905,6 +919,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building the station")
         .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                // The tray's Quit, an update: the windows go with the app.
+                QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             if let tauri::RunEvent::Exit = event {
                 // A downloaded update goes in as the app closes, as the
                 // Electron app's did; it is opened again next time as usual.
