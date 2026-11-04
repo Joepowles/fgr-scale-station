@@ -96,6 +96,8 @@ export default function ScaleTab({ draft, patch }) {
               {num('unsettledTolerance', 'weigh it anyway within', 'The reading must still hold this steady for the settle time. The entry says it was weighed while moving.')}
             </div>
           )}
+          {/* The Rust app's: people on the deck never change a truck's weight. */}
+          {s.ignoreWeight !== undefined && num('ignoreWeight', 'Ignore changes up to', 'Someone getting out of the cab or stepping onto the scale. A weighed truck keeps its weight while the reading stays this close to it.')}
         </div>
       </section>
       <section className="border-t border-gray-800 pt-4 grid grid-cols-1 md:grid-cols-3 gap-5">

@@ -56,6 +56,7 @@ fn base_defaults() -> Value {
             "stableTolerance": 40,
             "unsettledSeconds": 20,
             "unsettledTolerance": 200,
+            "ignoreWeight": 500,
             "display": "picture",
             "overlayCorner": "bottom-left",
             "stampPhoto": true,
