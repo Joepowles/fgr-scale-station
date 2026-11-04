@@ -5,6 +5,8 @@ Newest first. The app shows this file on the Updates tab of its settings.
 ## 0.2.16
 
 - Keep a truck's weight when people get out or step onto the scale.
+- Windows come back where they were: history window kept open, mixed scaling, off-screen.
+- Ignore plates of vehicles parked in view of the scale camera.
 
 ## 0.2.15
 
