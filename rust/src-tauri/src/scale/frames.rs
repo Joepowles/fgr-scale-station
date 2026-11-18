@@ -325,8 +325,6 @@ struct Sample {
 #[derive(Debug, Clone, Copy)]
 struct Motion {
     since: i64,
-    /// The lightest reading since it began.
-    low: f64,
     /// The heaviest it has settled at (the weight taken, to begin with).
     high: f64,
     /// Readings in a row more than the swap weight under `high`, since
@@ -342,8 +340,8 @@ struct Motion {
 }
 
 impl Motion {
-    fn new(since: i64, weight: f64, locked: f64) -> Self {
-        Self { since, low: weight, high: locked, dip: None, gone: None, stopped: None, more: None }
+    fn new(since: i64, locked: f64) -> Self {
+        Self { since, high: locked, dip: None, gone: None, stopped: None, more: None }
     }
 }
 
@@ -451,7 +449,8 @@ pub const ROLLING_ON_MS: i64 = 15_000;
 /// - heavier and nothing gone off: more of the same truck, or the next
 ///   one's front (above);
 /// - lighter by more than the clear weight at some point (than the weight
-///   taken, or than a heavier weight it settled at since), and heavier
+///   taken, or than a heavier weight it settled at since) for more than a
+///   stray reading, and heavier
 ///   again since by more than the clear weight: the truck ahead has gone and
 ///   the next one is on: weighed afresh (`Weighed`, `follows` the one before);
 /// - only ever lighter: the truck pulling off, part of it still on
@@ -624,14 +623,13 @@ impl WeighingTrigger {
                     if (weight - last.weight).abs() > self.ignore { Some(self.off_band.map_or((1, at), |(n, since)| (n + 1, since))) } else { None };
                 if self.off_band.is_some_and(|(n, since)| n >= CLEAR_READINGS && at - since >= CLEAR_MS) {
                     let since = self.off_band.take().map_or(at, |(_, since)| since);
-                    self.motion = Some(Motion::new(since, weight, last.weight));
+                    self.motion = Some(Motion::new(since, last.weight));
                     self.run = None;
                     return Some(TriggerEvent::Moving { weight, locked: last.weight, at });
                 }
                 return None;
             };
             let (ignore, swap) = (self.ignore, self.swap_weight);
-            motion.low = motion.low.min(weight);
             if settled && motion.gone.is_none() {
                 motion.high = motion.high.max(weight);
             }
@@ -656,9 +654,11 @@ impl WeighingTrigger {
             if weight < self.min_weight {
                 return None;
             }
-            // Gone off: lighter than the weight taken (the old rule, which a
-            // single low reading meets), or a dip as above.
-            let trough = [(motion.low < last.weight - swap).then_some(motion.low), motion.gone].into_iter().flatten().reduce(f64::min);
+            // Gone off: the dip above. Not the lightest reading alone: one
+            // frame that lost a digit on the line (2,080 for 20,800) would
+            // be the truck ahead gone, and the rest of it coming on another
+            // truck (WC-Office, 2026-11-18, issue #40).
+            let trough = motion.gone;
             let mut verdict = settled.then(|| (after_moving(last.weight, trough, weight, ignore, swap), weight, false));
             // The next truck, never settling: weighed anyway, as on an empty deck.
             let waited = self.unsettled_ms > 0 && at - motion.since >= self.unsettled_ms;
@@ -1395,6 +1395,50 @@ mod tests {
         t.feed_n(200, |_| 36_000.0, false);
         assert_eq!(t.kinds(), ["weighed", "weighed"]);
         assert_eq!((t.weight_of(1), t.follows_of(1)), (36_000.0, Some(20_000.0)));
+    }
+
+    /// Plays back a trace from a bug report: each reading in it stood for
+    /// half a second (ten frames), except those ending in `!`, a frame that
+    /// lost a digit on the line (one frame, then the reading before it again).
+    fn replay(t: &mut Rig, trace: &str) {
+        let mut last = (0.0, false);
+        for r in trace.split_whitespace() {
+            let stray = r.ends_with('!');
+            let r = r.trim_end_matches('!');
+            let motion = r.ends_with('m');
+            let weight: f64 = r.trim_end_matches('m').parse().unwrap();
+            if stray {
+                t.feed(weight, motion);
+                t.feed_n(9, |_| last.0, last.1);
+            } else {
+                t.feed_n(10, |_| weight, motion);
+                last = (weight, motion);
+            }
+        }
+    }
+
+    #[test]
+    fn a_frame_that_lost_a_digit_is_not_the_truck_ahead_leaving() {
+        // WC-Office, 2026-11-18, issue #40: a truck pulled on in stages and
+        // settled at 15,100 lb with its trailer still off, then rolled the
+        // rest of the way on to 20,820. One frame read 2,080 (20,800 less a
+        // digit) as it did, and was taken for the truck ahead going off: the
+        // 20,820 became a second truck, paired with the first for a net of
+        // 5,720 lb.
+        let mut t = Rig::new(4000.0, 2.0, 0);
+        replay(
+            &mut t,
+            // The trace in its log, its other short readings filled in.
+            "0 0 0 0 0 0 0m 1680m 4080m 4260m 4280m 10260m 10120m 10040m 9840m 9840 9860 9880m 9880 9900 9900 9900 9900 9900 9920 9940m \
+             14900m 15140m 15120m 15060m 15060 15080 15100 15100 15100 15120 15120 15120 15140m 15140 15140 15140 15140 15120 15060m 15000m \
+             20960m 2080m! 20780m 20760 20720m 20680 20740 20800 20800 20800 20820 20820 20820 20820 20820 20820 20820 20820 20820 20820",
+        );
+        // The truck stood there until 18:50:17. More of the same truck: one
+        // weighing of it, 20,820 lb.
+        t.feed_n(1400, |_| 20_820.0, false);
+        assert_eq!(t.kinds(), ["weighed", "reweighed", "reweighed"]);
+        assert_eq!(t.weight_of(2), 20_820.0);
+        assert!(t.weighings().iter().all(|e| !matches!(e, TriggerEvent::Weighed { follows: Some(_), .. })));
     }
 
     #[test]
